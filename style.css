@@ -131,6 +131,10 @@
 .persona-variant-bound-version-actions .menu_button {
     margin: 0;
     padding: 0.2rem 0.35rem;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
 }
 
 .persona-variant-chat-heading {
