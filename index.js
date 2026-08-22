@@ -166,6 +166,18 @@ function getVisibleVariants(variants) {
     });
 }
 
+function getVisibleVariantGroups(variants, currentCharacter = getCurrentCharacterContext()) {
+    const visibleVariants = getVisibleVariants(variants);
+    if (!currentCharacter) {
+        return { bound: [], generic: visibleVariants };
+    }
+
+    return {
+        bound: visibleVariants.filter(variant => (variant.characterIds ?? []).includes(currentCharacter.id)),
+        generic: visibleVariants.filter(variant => (variant.characterIds ?? []).length === 0),
+    };
+}
+
 function toggleCurrentCharacterBinding() {
     const variant = selectedVariant();
     const character = getCurrentCharacterContext();
@@ -273,6 +285,10 @@ function renderCharacterBindingBrowser(panel, variant) {
         characterSelect.append(option);
     }
 
+    const currentCharacter = getCurrentCharacterContext();
+    if (!selectedBindingCharacterId && currentCharacter && characterOptions.some(option => option.id === currentCharacter.id)) {
+        selectedBindingCharacterId = currentCharacter.id;
+    }
     if (!characterOptions.some(option => option.id === selectedBindingCharacterId)) {
         selectedBindingCharacterId = '';
     }
@@ -335,7 +351,9 @@ function render() {
     const validPersona = isNamedExistingPersona();
     const store = getPersonaStore(user_avatar);
     const variants = store?.variants ?? [];
-    const visibleVariants = getVisibleVariants(variants);
+    const currentCharacter = getCurrentCharacterContext();
+    const visibleGroups = getVisibleVariantGroups(variants, currentCharacter);
+    const visibleVariants = [...visibleGroups.bound, ...visibleGroups.generic];
     const chatContext = getCurrentChatContext();
     const chatBinding = getCurrentChatBinding();
     const select = panel.querySelector('#persona_variant_select');
@@ -344,18 +362,42 @@ function render() {
     emptyOption.textContent = validPersona ? '选择已保存的人设版本…' : '请先选择一个已命名的人设';
     select.replaceChildren(emptyOption);
 
-    for (const variant of visibleVariants) {
-        const option = document.createElement('option');
-        option.value = variant.id;
-        option.textContent = getVariantLabel(variant);
-        option.title = new Date(variant.updatedAt || variant.createdAt).toLocaleString();
-        select.append(option);
+    const appendOptions = (parent, source) => {
+        for (const variant of source) {
+            const option = document.createElement('option');
+            option.value = variant.id;
+            option.textContent = getVariantLabel(variant);
+            option.title = new Date(variant.updatedAt || variant.createdAt).toLocaleString();
+            parent.append(option);
+        }
+    };
+    if (currentCharacter) {
+        if (visibleGroups.bound.length) {
+            const group = document.createElement('optgroup');
+            group.label = `当前角色：${currentCharacter.name}`;
+            appendOptions(group, visibleGroups.bound);
+            select.append(group);
+        }
+        if (visibleGroups.generic.length) {
+            const group = document.createElement('optgroup');
+            group.label = '通用版本';
+            appendOptions(group, visibleGroups.generic);
+            select.append(group);
+        }
+    } else {
+        appendOptions(select, visibleVariants);
     }
 
     select.value = visibleVariants.some(item => item.id === store?.activeId) ? store.activeId : '';
     select.disabled = !validPersona || visibleVariants.length === 0;
     const variant = visibleVariants.find(item => item.id === select.value) ?? null;
-    const currentCharacter = getCurrentCharacterContext();
+    const currentCharacterStatus = panel.querySelector('#persona_variant_current_character');
+    if (currentCharacterStatus) {
+        currentCharacterStatus.textContent = currentCharacter
+            ? `当前角色：${currentCharacter.name}`
+            : '当前未识别到角色聊天';
+        currentCharacterStatus.classList.toggle('is-active', Boolean(currentCharacter));
+    }
     panel.querySelector('#persona_variant_save').disabled = !validPersona;
     panel.querySelector('#persona_variant_overwrite').disabled = !validPersona || !variant || getSettings().autoSaveEnabled;
     panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant;
@@ -411,8 +453,11 @@ async function saveVariant() {
     }
 
     const store = getPersonaStore(user_avatar, true);
-    const personaName = String(power_user.personas[user_avatar] ?? 'Persona');
-    const suggestedName = `${personaName} - ${store.variants.length + 1}`.trim();
+    const personaName = String(power_user.personas[user_avatar] ?? 'Persona').trim();
+    const chatContext = getCurrentChatContext();
+    const suggestedName = chatContext
+        ? `${personaName} - ${chatContext.characterName} -`
+        : `${personaName} - ${store.variants.length + 1}`.trim();
     const name = await askForName('保存当前人设版本', suggestedName);
     if (!name) {
         return;
@@ -423,7 +468,7 @@ async function saveVariant() {
         id: makeId(),
         name,
         ...snapshot,
-        characterIds: [],
+        characterIds: chatContext ? [chatContext.characterId] : [],
         createdAt: now,
         updatedAt: now,
     };
@@ -662,6 +707,26 @@ function mount() {
         <div class="persona-variants-heading">
             <span><i class="fa-solid fa-layer-group fa-fw"></i> 人设版本</span>
             <span class="persona-variants-count text_muted">0 个版本</span>
+        </div>
+        <div class="persona-variant-current-character">
+            <span><i class="fa-solid fa-user fa-fw"></i> 当前角色识别</span>
+            <span id="persona_variant_current_character" class="persona-variant-current-character-status text_muted">当前未识别到角色聊天</span>
+        </div>
+        <div class="persona-variant-character-section persona-variant-character-section-top">
+            <div class="persona-variant-character-heading">
+                <span><i class="fa-solid fa-user-group fa-fw"></i> 角色绑定预览</span>
+                <span class="persona-variant-character-note text_muted">先应用到当前角色，再查看绑定与通用版本</span>
+            </div>
+            <div class="persona-variant-character-browser">
+                <div class="persona-variant-character-parent">
+                    <input id="persona_variant_character_search" class="text_pole" type="search" placeholder="搜索当前 user 绑定过的角色…" aria-label="搜索绑定角色">
+                    <select id="persona_variant_character_select" class="text_pole" aria-label="选择绑定角色"></select>
+                </div>
+                <div class="persona-variant-character-child">
+                    <div class="persona-variant-character-child-heading">所选角色的绑定版本</div>
+                    <div id="persona_variant_character_versions" class="persona-variant-character-versions text_muted">选择角色查看已绑定版本</div>
+                </div>
+            </div>
         </div>
         <div class="persona-variants-picker">
             <select id="persona_variant_select" class="text_pole" aria-label="已保存的人设版本"></select>

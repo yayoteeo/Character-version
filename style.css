@@ -1,10 +1,36 @@
 #persona_variants_panel {
-    margin: 0.65rem 0 1rem;
-    padding: 0.65rem;
+    width: min(100%, 560px);
+    margin: 0.45rem 0 0.75rem;
+    padding: 0.55rem;
     border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--SmartThemeBlurTintColor);
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 75%, transparent);
+}
+
+.persona-variant-current-character {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0.35rem 0 0.45rem;
+    padding: 0.4rem 0.5rem;
+    border-left: 3px solid var(--SmartThemeBorderColor);
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 45%, transparent);
+    font-size: 0.9em;
+}
+
+.persona-variant-current-character-status.is-active {
+    color: var(--SmartThemeQuoteColor);
+    font-weight: 600;
+}
+
+.persona-variant-character-section-top {
+    margin-top: 0;
+}
+
+#persona_variants_panel > .persona-variant-character-section:not(.persona-variant-character-section-top) {
+    display: none;
 }
 
 #persona_variants_toggle.selected {
@@ -48,9 +74,70 @@
 }
 
 .persona-variant-chat-section {
-    margin-top: 0.7rem;
-    padding-top: 0.65rem;
+    margin-top: 0.55rem;
+    padding-top: 0.5rem;
     border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.persona-variant-character-section {
+    margin: 0.45rem 0 0.55rem;
+    padding: 0.45rem 0;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.persona-variant-character-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+    font-weight: 600;
+}
+
+.persona-variant-character-note {
+    font-weight: 400;
+    font-size: 0.85em;
+}
+
+.persona-variant-character-browser {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    gap: 0.45rem;
+}
+
+.persona-variant-character-parent,
+.persona-variant-character-child {
+    min-width: 0;
+}
+
+.persona-variant-character-parent {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.persona-variant-character-child-heading {
+    margin-bottom: 0.3rem;
+    font-size: 0.88em;
+    font-weight: 600;
+}
+
+.persona-variant-bound-version {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+    padding: 0.25rem 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 55%, transparent);
+}
+
+.persona-variant-bound-version-actions {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.persona-variant-bound-version-actions .menu_button {
+    margin: 0;
+    padding: 0.2rem 0.35rem;
 }
 
 .persona-variant-chat-heading {
@@ -85,6 +172,14 @@
 }
 
 @media (max-width: 700px) {
+    #persona_variants_panel {
+        width: 100%;
+    }
+
+    .persona-variant-character-browser {
+        grid-template-columns: 1fr;
+    }
+
     .persona-variants-picker {
         flex-wrap: wrap;
     }
