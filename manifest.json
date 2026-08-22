@@ -1,0 +1,11 @@
+{
+    "display_name": "人设版本管理",
+    "loading_order": 110,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Codex",
+    "version": "1.0.0",
+    "description": "在用户设定管理中为同一个用户人设保存和切换多个版本。"
+}
