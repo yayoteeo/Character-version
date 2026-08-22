@@ -2,11 +2,9 @@ import {
     eventSource,
     event_types,
     saveSettingsDebounced,
-    setUserName,
 } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import {
-    getUserAvatars,
     persona_description_positions,
     setPersonaDescription,
     user_avatar,
@@ -19,6 +17,15 @@ const PANEL_ID = 'persona_variants_panel';
 const DEFAULT_DEPTH = 2;
 const DEFAULT_ROLE = 0;
 
+function isNamedExistingPersona(avatarId = user_avatar) {
+    if (!avatarId || !Object.hasOwn(power_user.personas ?? {}, avatarId)) {
+        return false;
+    }
+
+    const name = String(power_user.personas[avatarId] ?? '').trim();
+    return Boolean(name && name !== '[Unnamed Persona]');
+}
+
 function makeId() {
     if (globalThis.crypto?.randomUUID) {
         return globalThis.crypto.randomUUID();
@@ -28,9 +35,18 @@ function makeId() {
 }
 
 function getSettings() {
-    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 1, personas: {} };
+    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 2, personas: {} };
     settings.schemaVersion ??= 1;
     settings.personas ??= {};
+
+    if (settings.schemaVersion < 2) {
+        for (const store of Object.values(settings.personas)) {
+            for (const variant of store?.variants ?? []) {
+                delete variant.personaName;
+            }
+        }
+        settings.schemaVersion = 2;
+    }
     return settings;
 }
 
@@ -53,13 +69,12 @@ function getPersonaStore(avatarId = user_avatar, create = false) {
 }
 
 function captureCurrentPersona() {
-    if (!user_avatar || !power_user.personas?.[user_avatar]) {
+    if (!isNamedExistingPersona()) {
         return null;
     }
 
     const descriptor = power_user.persona_descriptions?.[user_avatar] ?? {};
     return {
-        personaName: String(power_user.personas[user_avatar] ?? ''),
         title: String(descriptor.title ?? ''),
         description: String(descriptor.description ?? power_user.persona_description ?? ''),
         position: Number(descriptor.position ?? power_user.persona_description_position ?? persona_description_positions.IN_PROMPT),
@@ -70,7 +85,22 @@ function captureCurrentPersona() {
 }
 
 function getVariantLabel(variant) {
-    return variant.name || variant.personaName || '未命名版本';
+    return variant.name || '未命名版本';
+}
+
+function refreshCurrentPersonaCard() {
+    const noDescription = $('#user_avatar_block').attr('no_desc_text') || '[No description]';
+    $('#user_avatar_block .avatar-container').each(function () {
+        if ($(this).attr('data-avatar-id') !== user_avatar) {
+            return;
+        }
+
+        const descriptor = power_user.persona_descriptions?.[user_avatar] ?? {};
+        $(this).find('.ch_description')
+            .text(descriptor.description || noDescription)
+            .toggleClass('text_muted', !descriptor.description);
+        $(this).find('.ch_additional_info').text(descriptor.title || '');
+    });
 }
 
 function render() {
@@ -79,20 +109,20 @@ function render() {
         return;
     }
 
-    const validPersona = Boolean(user_avatar && power_user.personas?.[user_avatar]);
+    const validPersona = isNamedExistingPersona();
     const store = getPersonaStore(user_avatar);
     const variants = store?.variants ?? [];
     const select = panel.querySelector('#persona_variant_select');
     const emptyOption = document.createElement('option');
     emptyOption.value = '';
-    emptyOption.textContent = validPersona ? '选择已保存的人设版本…' : '请先选择一个用户人设';
+    emptyOption.textContent = validPersona ? '选择已保存的人设版本…' : '请先选择一个已命名的人设';
     select.replaceChildren(emptyOption);
 
     for (const variant of variants) {
         const option = document.createElement('option');
         option.value = variant.id;
         option.textContent = getVariantLabel(variant);
-        option.title = `${variant.personaName || '未命名人设'} · ${new Date(variant.updatedAt || variant.createdAt).toLocaleString()}`;
+        option.title = new Date(variant.updatedAt || variant.createdAt).toLocaleString();
         select.append(option);
     }
 
@@ -135,7 +165,8 @@ async function saveVariant() {
     }
 
     const store = getPersonaStore(user_avatar, true);
-    const suggestedName = `${snapshot.personaName} ${store.variants.length + 1}`.trim();
+    const personaName = String(power_user.personas[user_avatar] ?? 'Persona');
+    const suggestedName = `${personaName} - ${store.variants.length + 1}`.trim();
     const name = await askForName('保存当前人设版本', suggestedName);
     if (!name) {
         return;
@@ -158,15 +189,13 @@ function selectedVariant() {
 
 async function applyVariant() {
     const variant = selectedVariant();
-    if (!variant || !user_avatar || !power_user.personas?.[user_avatar]) {
+    if (!variant || !isNamedExistingPersona()) {
         return;
     }
 
-    const oldName = power_user.personas[user_avatar];
     const descriptor = power_user.persona_descriptions[user_avatar] ??= {};
     const connections = descriptor.connections;
 
-    power_user.personas[user_avatar] = variant.personaName;
     Object.assign(descriptor, {
         title: variant.title,
         description: variant.description,
@@ -184,21 +213,11 @@ async function applyVariant() {
     power_user.persona_description_depth = variant.depth;
     power_user.persona_description_role = variant.role;
     power_user.persona_description_lorebook = variant.lorebook;
-    setUserName(variant.personaName, { toastPersonaNameChange: false });
-
     const store = getPersonaStore(user_avatar, true);
     store.activeId = variant.id;
     saveSettingsDebounced();
-    await getUserAvatars(true, user_avatar);
     setPersonaDescription();
-
-    if (oldName !== variant.personaName) {
-        await eventSource.emit(event_types.PERSONA_RENAMED, {
-            avatarId: user_avatar,
-            oldName,
-            newName: variant.personaName,
-        });
-    }
+    refreshCurrentPersonaCard();
     await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     render();
     toastr.success(`已应用“${getVariantLabel(variant)}”。`, '人设版本管理');
@@ -212,6 +231,7 @@ async function overwriteVariant() {
     }
 
     Object.assign(variant, snapshot, { updatedAt: new Date().toISOString() });
+    delete variant.personaName;
     const store = getPersonaStore(user_avatar, true);
     store.activeId = variant.id;
     saveSettingsDebounced();
