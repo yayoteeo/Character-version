@@ -14,7 +14,10 @@
 
 .persona-variants-heading,
 .persona-variants-picker,
-.persona-variants-actions {
+.persona-variants-actions,
+.persona-variant-bindings-heading,
+.persona-variant-binding-row,
+.persona-variant-binding-buttons {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -24,6 +27,73 @@
     justify-content: space-between;
     margin-bottom: 0.5rem;
     font-weight: 600;
+}
+
+.persona-variant-bindings {
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.persona-variant-bindings-heading {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    margin-bottom: 0.55rem;
+    font-weight: 600;
+}
+
+.persona-variant-binding-row {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    padding: 0.4rem 0;
+}
+
+.persona-variant-character-status,
+.persona-variant-chat-status {
+    min-width: 12rem;
+    flex: 1 1 12rem;
+}
+
+.persona-variant-binding-buttons {
+    flex-wrap: wrap;
+}
+
+.persona-variant-binding-list-row {
+    display: grid;
+    grid-template-columns: minmax(5rem, auto) minmax(0, 1fr);
+    gap: 0.5rem;
+    align-items: start;
+    margin: 0.25rem 0 0.5rem;
+}
+
+.persona-variant-binding-label {
+    font-weight: 600;
+}
+
+.persona-variant-bound-characters,
+.persona-variant-bound-chats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.persona-variant-binding-chip {
+    max-width: 100%;
+    padding: 0.2rem 0.45rem;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 999px;
+    color: var(--SmartThemeBodyColor);
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.persona-variant-binding-chip:hover {
+    border-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeQuoteColor);
 }
 
 .persona-variants-picker {
@@ -42,7 +112,8 @@
 }
 
 .persona-variants-actions .menu_button,
-.persona-variants-picker .menu_button {
+.persona-variants-picker .menu_button,
+.persona-variant-bindings .menu_button {
     margin: 0;
 }
 
@@ -59,5 +130,9 @@
 
     #persona_variant_select {
         flex-basis: 100%;
+    }
+
+    .persona-variant-binding-list-row {
+        grid-template-columns: 1fr;
     }
 }
