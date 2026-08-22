@@ -5,11 +5,10 @@ import {
 } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import {
-    persona_description_positions,
     setPersonaDescription,
     user_avatar,
 } from '../../../personas.js';
-import { power_user } from '../../../power-user.js';
+import { persona_description_positions, power_user } from '../../../power-user.js';
 import { Popup } from '../../../popup.js';
 
 const MODULE_NAME = 'persona-variants';
@@ -18,7 +17,7 @@ const DEFAULT_DEPTH = 2;
 const DEFAULT_ROLE = 0;
 
 function isNamedExistingPersona(avatarId = user_avatar) {
-    if (!avatarId || !Object.hasOwn(power_user.personas ?? {}, avatarId)) {
+    if (!avatarId || !Object.prototype.hasOwnProperty.call(power_user.personas ?? {}, avatarId)) {
         return false;
     }
 
@@ -218,7 +217,9 @@ async function applyVariant() {
     saveSettingsDebounced();
     setPersonaDescription();
     refreshCurrentPersonaCard();
-    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
+    if (typeof event_types.PERSONA_UPDATED === 'string') {
+        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
+    }
     render();
     toastr.success(`已应用“${getVariantLabel(variant)}”。`, '人设版本管理');
 }
@@ -292,13 +293,13 @@ function onSelectionChanged(event) {
 function mount() {
     if (document.getElementById(PANEL_ID)) {
         render();
-        return;
+        return true;
     }
 
     const controls = document.querySelector('#persona_controls');
     const renameButton = document.querySelector('#persona_rename_button');
     if (!controls || !renameButton) {
-        return;
+        return false;
     }
 
     const toggle = document.createElement('button');
@@ -349,6 +350,26 @@ function mount() {
     panel.querySelector('#persona_variant_rename').addEventListener('click', renameVariant);
     panel.querySelector('#persona_variant_delete').addEventListener('click', deleteVariant);
     render();
+    return true;
+}
+
+function mountWhenAvailable() {
+    if (mount()) {
+        return;
+    }
+
+    const observer = new MutationObserver(() => {
+        if (mount()) {
+            observer.disconnect();
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+}
+
+function subscribeIfSupported(eventName, handler) {
+    if (typeof eventName === 'string') {
+        eventSource.on(eventName, handler);
+    }
 }
 
 function onPersonaRenamed() {
@@ -368,10 +389,11 @@ function onPersonaDeleted({ avatarId } = {}) {
 
 jQuery(() => {
     getSettings();
-    mount();
-    eventSource.on(event_types.PERSONA_CHANGED, render);
-    eventSource.on(event_types.PERSONA_UPDATED, render);
-    eventSource.on(event_types.PERSONA_RENAMED, onPersonaRenamed);
-    eventSource.on(event_types.PERSONA_DELETED, onPersonaDeleted);
-    eventSource.on(event_types.SETTINGS_UPDATED, render);
+    mountWhenAvailable();
+    subscribeIfSupported(event_types.PERSONA_CHANGED, render);
+    subscribeIfSupported(event_types.PERSONA_UPDATED, render);
+    subscribeIfSupported(event_types.PERSONA_RENAMED, onPersonaRenamed);
+    subscribeIfSupported(event_types.PERSONA_DELETED, onPersonaDeleted);
+    subscribeIfSupported(event_types.SETTINGS_UPDATED, render);
+    $(document).on('click.personaVariants', '#user_avatar_block .avatar-container', () => setTimeout(render, 0));
 });
