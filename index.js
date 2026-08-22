@@ -173,24 +173,39 @@ function isVariantForCharacter(variant, context) {
 
 function getBoundCharacterOptions() {
     const store = getPersonaStore(user_avatar);
-    const ids = [...new Set((store?.variants ?? []).flatMap(variant => variant.characterIds ?? []))];
-    return ids.map(id => ({ id, name: String(characters?.find(character => character?.avatar === id)?.name || id) }))
+    const ids = new Set((store?.variants ?? []).flatMap(variant => variant.characterIds ?? []).map(String));
+    for (const variant of store?.variants ?? []) {
+        for (const name of variant.characterNames ?? []) {
+            const character = characters?.find(item => normalizeCharacterName(item?.name) === normalizeCharacterName(name));
+            if (character?.avatar) {
+                ids.add(String(character.avatar));
+            }
+        }
+    }
+    return [...ids].map(id => ({ id, name: String(characters?.find(character => String(character?.avatar) === String(id))?.name || id) }))
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getBoundVariantsForCharacter(characterId) {
-    return (getPersonaStore(user_avatar)?.variants ?? []).filter(variant => (variant.characterIds ?? []).includes(characterId));
+    const character = characters?.find(item => String(item?.avatar) === String(characterId));
+    return (getPersonaStore(user_avatar)?.variants ?? []).filter(variant =>
+        (variant.characterIds ?? []).some(id => String(id) === String(characterId))
+        || Boolean(character && (variant.characterNames ?? []).some(name => normalizeCharacterName(name) === normalizeCharacterName(character.name))),
+    );
+}
+
+function hasCharacterBinding(variant) {
+    return Boolean((variant.characterIds ?? []).length || (variant.characterNames ?? []).length);
 }
 
 function getVisibleVariants(variants) {
     const currentCharacter = getCurrentCharacterContext();
     if (!currentCharacter) {
-        return variants.filter(variant => (variant.characterIds ?? []).length === 0);
+        return variants.filter(variant => !hasCharacterBinding(variant));
     }
 
     return variants.filter(variant => {
-        const characterIds = variant.characterIds ?? [];
-        return characterIds.length === 0 || isVariantForCharacter(variant, currentCharacter);
+        return !hasCharacterBinding(variant) || isVariantForCharacter(variant, currentCharacter);
     });
 }
 
@@ -202,7 +217,7 @@ function getVisibleVariantGroups(variants, currentCharacter = getCurrentCharacte
 
     return {
         bound: visibleVariants.filter(variant => isVariantForCharacter(variant, currentCharacter)),
-        generic: visibleVariants.filter(variant => (variant.characterIds ?? []).length === 0),
+        generic: visibleVariants.filter(variant => !hasCharacterBinding(variant)),
     };
 }
 
@@ -274,6 +289,10 @@ function refreshCurrentPersonaCard() {
 
 function getCharacterName(characterId) {
     return String(characters?.find(character => character?.avatar === characterId)?.name || characterId);
+}
+
+function getSelectedBindingCharacterId() {
+    return document.querySelector('#persona_variant_character_select')?.value || selectedBindingCharacterId;
 }
 
 function renderCharacterBindingBrowser(panel) {
@@ -434,8 +453,14 @@ async function saveVariant() {
     const store = getPersonaStore(user_avatar, true);
     const personaName = String(power_user.personas[user_avatar] ?? 'Persona').trim();
     const chatContext = getCurrentChatContext();
-    const targetCharacterId = selectedBindingCharacterId || chatContext?.characterId || '';
-    const targetCharacterName = targetCharacterId ? getCharacterName(targetCharacterId) : chatContext?.characterName;
+    const selectedCharacterId = getSelectedBindingCharacterId();
+    const targetCharacterId = selectedCharacterId || chatContext?.characterId || '';
+    const currentCharacter = getCurrentCharacterContext();
+    const targetCharacterName = targetCharacterId
+        ? currentCharacter && isCharacterIdForContext(targetCharacterId, currentCharacter)
+            ? currentCharacter.name
+            : getCharacterName(targetCharacterId)
+        : chatContext?.characterName;
     const suggestedName = targetCharacterName
         ? `${personaName} - ${targetCharacterName} -`
         : `${personaName} - ${store.variants.length + 1}`.trim();
@@ -456,6 +481,12 @@ async function saveVariant() {
     };
     store.variants.push(variant);
     store.activeId = variant.id;
+    if (targetCharacterId) {
+        selectedBindingCharacterId = targetCharacterId;
+        selectedBindingContextKey = currentCharacter
+            ? `${currentCharacter.id}|${normalizeCharacterName(currentCharacter.name)}`
+            : selectedBindingContextKey;
+    }
     saveSettingsDebounced();
     render();
     toastr.success(`已保存“${name}”。`, '人设版本管理');
