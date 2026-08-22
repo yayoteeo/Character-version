@@ -23,6 +23,7 @@ const AUTO_APPLY_DELAY = 300;
 const AUTO_SAVE_DELAY = 350;
 
 let selectedBindingCharacterId = '';
+let selectedBindingContextKey = '';
 
 let contextChangeTimer = null;
 let autoSaveTimer = null;
@@ -292,8 +293,22 @@ function renderCharacterBindingBrowser(panel) {
         characterSelect.append(option);
     }
 
+    const currentCharacter = getCurrentCharacterContext();
+    const contextKey = currentCharacter
+        ? `${currentCharacter.id}|${normalizeCharacterName(currentCharacter.name)}`
+        : '';
+    if (contextKey !== selectedBindingContextKey) {
+        selectedBindingContextKey = contextKey;
+        const matchingOption = currentCharacter
+            ? characterOptions.find(option => isCharacterIdForContext(option.id, currentCharacter))
+            : null;
+        selectedBindingCharacterId = matchingOption?.id ?? '';
+    }
     if (!characterOptions.some(option => option.id === selectedBindingCharacterId)) {
-        selectedBindingCharacterId = '';
+        const matchingOption = currentCharacter
+            ? characterOptions.find(option => isCharacterIdForContext(option.id, currentCharacter))
+            : null;
+        selectedBindingCharacterId = matchingOption?.id ?? '';
     }
     characterSelect.value = selectedBindingCharacterId;
     boundVersions.replaceChildren();
@@ -762,7 +777,7 @@ function mount() {
     panel.querySelector('#persona_variant_unbind_chat').addEventListener('click', unbindCurrentChat);
     panel.querySelector('#persona_variant_character_select').addEventListener('change', (event) => {
         selectedBindingCharacterId = event.currentTarget.value;
-        renderCharacterBindingBrowser(panel);
+        render();
     });
     render();
     return true;
@@ -794,6 +809,12 @@ function onPersonaRenamed() {
 function onPersonaUpdated() {
     render();
     scheduleAutoSave(false);
+}
+
+function onPersonaChanged() {
+    selectedBindingCharacterId = '';
+    selectedBindingContextKey = '';
+    scheduleContextChange();
 }
 
 function onPersonaDeleted({ avatarId } = {}) {
@@ -850,7 +871,7 @@ jQuery(() => {
     subscribeIfSupported(event_types.SETTINGS_UPDATED, render);
     subscribeIfSupported(event_types.CHAT_CHANGED, scheduleContextChange);
     subscribeIfSupported(event_types.APP_READY, scheduleContextChange);
-    subscribeIfSupported(event_types.PERSONA_CHANGED, scheduleContextChange);
+    subscribeIfSupported(event_types.PERSONA_CHANGED, onPersonaChanged);
     subscribeIfSupported(event_types.CHARACTER_PAGE_LOADED, scheduleContextChange);
     subscribeIfSupported(event_types.CHARACTER_EDITED, scheduleContextChange);
     subscribeIfSupported(event_types.CHARACTER_RENAMED, scheduleContextChange);
