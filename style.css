@@ -13,12 +13,10 @@
 }
 
 .persona-variants-heading,
-.persona-variant-context-picker,
 .persona-variants-picker,
 .persona-variants-actions,
-.persona-variant-bindings-heading,
-.persona-variant-binding-row,
-.persona-variant-binding-buttons {
+.persona-variant-chat-heading,
+.persona-variant-chat-actions {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -28,106 +26,6 @@
     justify-content: space-between;
     margin-bottom: 0.5rem;
     font-weight: 600;
-}
-
-.persona-variant-context-picker {
-    display: grid;
-    grid-template-columns: minmax(12rem, 1fr) minmax(14rem, 1.3fr);
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-}
-
-.persona-variant-context-picker input,
-.persona-variant-context-picker select {
-    min-width: 0;
-    margin: 0;
-}
-
-.persona-variant-selected-context {
-    grid-column: 1 / -1;
-    font-size: 0.88em;
-}
-
-.persona-variant-bindings {
-    margin-top: 0.75rem;
-    padding-top: 0.65rem;
-    border-top: 1px solid var(--SmartThemeBorderColor);
-}
-
-.persona-variant-bindings-heading {
-    justify-content: space-between;
-    flex-wrap: wrap;
-    margin-bottom: 0.55rem;
-    font-weight: 600;
-}
-
-.persona-variant-binding-row {
-    justify-content: space-between;
-    flex-wrap: wrap;
-    padding: 0.4rem 0;
-}
-
-.persona-variant-chat-status {
-    min-width: 12rem;
-    flex: 1 1 12rem;
-}
-
-.persona-variant-character-status {
-    min-width: 12rem;
-    flex: 1 1 12rem;
-}
-
-.persona-variant-binding-help {
-    display: block;
-    margin-top: 0.25rem;
-}
-
-.persona-variant-binding-buttons {
-    flex-wrap: wrap;
-}
-
-.persona-variant-binding-list-row {
-    display: grid;
-    grid-template-columns: minmax(5rem, auto) minmax(0, 1fr);
-    gap: 0.5rem;
-    align-items: start;
-    margin: 0.25rem 0 0.5rem;
-}
-
-.persona-variant-binding-label {
-    font-weight: 600;
-}
-
-.persona-variant-bound-chats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    min-width: 0;
-}
-
-.persona-variant-bound-characters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    min-width: 0;
-}
-
-.persona-variant-binding-chip {
-    max-width: 100%;
-    padding: 0.2rem 0.45rem;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 999px;
-    color: var(--SmartThemeBodyColor);
-    background: var(--black30a, rgba(0, 0, 0, 0.3));
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-}
-
-.persona-variant-binding-chip:hover {
-    border-color: var(--SmartThemeQuoteColor);
-    color: var(--SmartThemeQuoteColor);
 }
 
 .persona-variants-picker {
@@ -145,25 +43,39 @@
     margin-top: 0.5rem;
 }
 
-.persona-variant-auto-save {
-    margin: 0 0 0 auto;
-    white-space: nowrap;
-}
-
-.persona-variant-auto-save-status {
-    min-width: 7rem;
-    font-size: 0.85em;
-}
-
-.persona-variant-scope-status {
-    min-width: 0;
-    overflow-wrap: anywhere;
-}
-
-.persona-variants-actions .menu_button,
-.persona-variants-picker .menu_button,
-.persona-variant-bindings .menu_button {
+.persona-variants-actions .menu_button {
     margin: 0;
+}
+
+.persona-variant-chat-section {
+    margin-top: 0.7rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.persona-variant-chat-heading {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.45rem;
+    font-weight: 600;
+}
+
+.persona-variant-chat-status {
+    font-weight: 400;
+}
+
+.persona-variant-chat-actions {
+    flex-wrap: wrap;
+}
+
+.persona-variant-chat-actions .menu_button {
+    margin: 0;
+}
+
+.persona-variant-chat-note {
+    margin-top: 0.45rem;
+    line-height: 1.4;
 }
 
 #persona_variants_panel button:disabled,
@@ -179,17 +91,5 @@
 
     #persona_variant_select {
         flex-basis: 100%;
-    }
-
-    .persona-variant-context-picker {
-        grid-template-columns: 1fr;
-    }
-
-    .persona-variant-binding-list-row {
-        grid-template-columns: 1fr;
-    }
-
-    .persona-variant-auto-save {
-        margin-left: 0;
     }
 }
