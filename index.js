@@ -329,6 +329,7 @@ function render() {
     const visibleVariants = [...visibleGroups.bound, ...visibleGroups.generic];
     const chatContext = getCurrentChatContext();
     const chatBinding = getCurrentChatBinding();
+    renderCharacterBindingBrowser(panel);
     const select = panel.querySelector('#persona_variant_select');
     const emptyOption = document.createElement('option');
     emptyOption.value = '';
@@ -374,7 +375,7 @@ function render() {
     const chatStatus = panel.querySelector('.persona-variant-chat-status');
     chatBindButton.disabled = !validPersona || !variant || !chatContext;
     const characterBindButton = panel.querySelector('#persona_variant_bind_character');
-    characterBindButton.disabled = !validPersona || !variant || !chatContext;
+    characterBindButton.disabled = !validPersona || !variant || (!currentCharacter && !selectedBindingCharacterId);
     chatUnbindButton.disabled = !chatBinding;
     chatBindButton.textContent = chatBinding ? '重新绑定' : '绑定聊天';
     chatStatus.textContent = !chatContext
@@ -382,7 +383,9 @@ function render() {
         : chatBinding
         ? `已绑定：${getVariantLabel(getVariant(chatBinding.avatarId, chatBinding.variantId))}`
             : '未绑定';
-    renderCharacterBindingBrowser(panel);
+    const currentCharacterStatus = panel.querySelector('#persona_variant_current_character');
+    currentCharacterStatus.textContent = currentCharacter ? currentCharacter.name : '未识别角色';
+    currentCharacterStatus.classList.toggle('is-active', Boolean(currentCharacter));
 }
 
 function togglePanel() {
@@ -445,17 +448,19 @@ async function saveVariant() {
 
 function bindSelectedVariantToCurrentCharacter() {
     const variant = selectedVariant();
-    const character = getCurrentCharacterContext();
-    if (!variant || !character) {
+    const currentCharacter = getCurrentCharacterContext();
+    const characterId = selectedBindingCharacterId || currentCharacter?.id;
+    if (!variant || !characterId) {
         return;
     }
 
-    variant.characterIds = [...new Set([...(variant.characterIds ?? []), character.id])];
-    variant.characterNames = [...new Set([...(variant.characterNames ?? []), character.name])];
+    const characterName = getCharacterName(characterId);
+    variant.characterIds = [...new Set([...(variant.characterIds ?? []), characterId])];
+    variant.characterNames = [...new Set([...(variant.characterNames ?? []), characterName])];
     variant.updatedAt = new Date().toISOString();
     saveSettingsDebounced();
     render();
-    toastr.success(`已将“${getVariantLabel(variant)}”加入“${character.name}”版本库。`, '人设版本管理');
+    toastr.success(`已将“${getVariantLabel(variant)}”加入“${characterName}”版本库。`, '人设版本管理');
 }
 
 function selectedVariant() {
@@ -519,9 +524,6 @@ async function bindCurrentChat() {
         return;
     }
 
-    variant.characterIds = [...new Set([...(variant.characterIds ?? []), chatContext.characterId])];
-    variant.characterNames = [...new Set([...(variant.characterNames ?? []), chatContext.characterName])];
-    variant.updatedAt = new Date().toISOString();
     getSettings().chatBindings[chatContext.key] = {
         avatarId: user_avatar,
         variantId: variant.id,
@@ -689,9 +691,13 @@ function mount() {
         <div class="persona-variants-heading">
             <span><i class="fa-solid fa-layer-group fa-fw"></i> 人设版本</span>
         </div>
+        <div class="persona-variant-current-character">
+            <span><i class="fa-solid fa-user fa-fw"></i> 当前角色</span>
+            <span id="persona_variant_current_character" class="persona-variant-current-character-status text_muted">未识别角色</span>
+        </div>
         <div class="persona-variant-character-section persona-variant-character-section-top">
             <div class="persona-variant-character-heading">
-                <span><i class="fa-solid fa-user-group fa-fw"></i> 角色绑定</span>
+                <span><i class="fa-solid fa-user-group fa-fw"></i> 角色库</span>
             </div>
             <div class="persona-variant-character-browser">
                 <div class="persona-variant-character-parent">
@@ -845,6 +851,10 @@ jQuery(() => {
     subscribeIfSupported(event_types.CHAT_CHANGED, scheduleContextChange);
     subscribeIfSupported(event_types.APP_READY, scheduleContextChange);
     subscribeIfSupported(event_types.PERSONA_CHANGED, scheduleContextChange);
+    subscribeIfSupported(event_types.CHARACTER_PAGE_LOADED, scheduleContextChange);
+    subscribeIfSupported(event_types.CHARACTER_EDITED, scheduleContextChange);
+    subscribeIfSupported(event_types.CHARACTER_RENAMED, scheduleContextChange);
+    subscribeIfSupported(event_types.CHARACTER_DELETED, scheduleContextChange);
     $(document).on('click.personaVariants', '#user_avatar_block .avatar-container', () => setTimeout(render, 0));
     $(document).on(
         'input.personaVariants change.personaVariants',
