@@ -98,6 +98,12 @@
     font-weight: 600;
 }
 
+.persona-variant-character-heading .menu_button {
+    margin: 0;
+    padding: 0.2rem 0.35rem;
+    white-space: nowrap;
+}
+
 .persona-variant-character-note {
     font-weight: 400;
     font-size: 0.85em;
@@ -120,9 +126,21 @@
 }
 
 .persona-variant-character-child-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    min-height: 2rem;
+    margin: 0;
+    padding: 0.25rem 0.45rem;
+    text-align: left;
     margin-bottom: 0.3rem;
     font-size: 0.88em;
     font-weight: 600;
+}
+
+.persona-variant-character-child-heading:disabled {
+    opacity: 0.55;
 }
 
 .persona-variant-bound-version {
