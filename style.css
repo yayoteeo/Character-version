@@ -13,6 +13,7 @@
 }
 
 .persona-variants-heading,
+.persona-variant-context-picker,
 .persona-variants-picker,
 .persona-variants-actions,
 .persona-variant-bindings-heading,
@@ -27,6 +28,24 @@
     justify-content: space-between;
     margin-bottom: 0.5rem;
     font-weight: 600;
+}
+
+.persona-variant-context-picker {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1fr) minmax(14rem, 1.3fr);
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.persona-variant-context-picker input,
+.persona-variant-context-picker select {
+    min-width: 0;
+    margin: 0;
+}
+
+.persona-variant-selected-context {
+    grid-column: 1 / -1;
+    font-size: 0.88em;
 }
 
 .persona-variant-bindings {
@@ -48,7 +67,6 @@
     padding: 0.4rem 0;
 }
 
-.persona-variant-character-status,
 .persona-variant-chat-status {
     min-width: 12rem;
     flex: 1 1 12rem;
@@ -70,7 +88,6 @@
     font-weight: 600;
 }
 
-.persona-variant-bound-characters,
 .persona-variant-bound-chats {
     display: flex;
     flex-wrap: wrap;
@@ -111,6 +128,21 @@
     margin-top: 0.5rem;
 }
 
+.persona-variant-auto-save {
+    margin: 0 0 0 auto;
+    white-space: nowrap;
+}
+
+.persona-variant-auto-save-status {
+    min-width: 7rem;
+    font-size: 0.85em;
+}
+
+.persona-variant-scope-status {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 .persona-variants-actions .menu_button,
 .persona-variants-picker .menu_button,
 .persona-variant-bindings .menu_button {
@@ -132,7 +164,15 @@
         flex-basis: 100%;
     }
 
+    .persona-variant-context-picker {
+        grid-template-columns: 1fr;
+    }
+
     .persona-variant-binding-list-row {
         grid-template-columns: 1fr;
+    }
+
+    .persona-variant-auto-save {
+        margin-left: 0;
     }
 }

@@ -20,8 +20,10 @@ const PANEL_ID = 'persona_variants_panel';
 const DEFAULT_DEPTH = 2;
 const DEFAULT_ROLE = 0;
 const AUTO_APPLY_DELAY = 120;
+const AUTO_SAVE_DELAY = 350;
 
 let contextChangeTimer = null;
+let autoSaveTimer = null;
 let autoApplyInProgress = false;
 let lastAutoAppliedBinding = '';
 
@@ -43,10 +45,12 @@ function makeId() {
 }
 
 function getSettings() {
-    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 3, personas: {}, chatBindings: {} };
+    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 5, personas: {}, chatBindings: {}, autoSaveEnabled: false, characterContext: {} };
     settings.schemaVersion ??= 1;
     settings.personas ??= {};
     settings.chatBindings ??= {};
+    settings.autoSaveEnabled ??= false;
+    settings.characterContext ??= {};
 
     if (settings.schemaVersion < 2) {
         for (const store of Object.values(settings.personas)) {
@@ -62,12 +66,32 @@ function getSettings() {
         settings.schemaVersion = 3;
     }
 
+    if (settings.schemaVersion < 4) {
+        settings.autoSaveEnabled ??= false;
+        settings.schemaVersion = 4;
+    }
+
+    if (settings.schemaVersion < 5) {
+        settings.characterContext ??= {};
+        settings.schemaVersion = 5;
+    }
+
     for (const store of Object.values(settings.personas)) {
         store.activeId ??= '';
         store.variants ??= [];
         for (const variant of store.variants) {
             const characterIds = Array.isArray(variant.characterIds) ? variant.characterIds : [];
             variant.characterIds = [...new Set(characterIds.map(String).filter(Boolean))];
+        }
+    }
+
+    // A chat binding also counts as a character binding. This keeps old data
+    // consistent with the role-first browser without requiring another action.
+    for (const binding of Object.values(settings.chatBindings)) {
+        const variant = settings.personas[binding?.avatarId]?.variants?.find(item => item.id === binding?.variantId);
+        const characterId = String(binding?.characterId ?? '').trim();
+        if (variant && characterId && !variant.characterIds.includes(characterId)) {
+            variant.characterIds.push(characterId);
         }
     }
     return settings;
@@ -127,12 +151,99 @@ function getVariant(avatarId, variantId) {
     return getPersonaStore(avatarId)?.variants.find(item => item.id === variantId) ?? null;
 }
 
-function getVisibleVariants(variants) {
-    const characterId = getCurrentCharacterContext()?.id;
+function getVisibleVariants(variants, characterId = '') {
     return variants.filter((variant) => {
-        const bindings = Array.isArray(variant.characterIds) ? variant.characterIds : [];
+        const bindings = getVariantCharacterIds(user_avatar, variant);
+        if (characterId === '__all__') {
+            return true;
+        }
+        if (characterId === '__unbound__') {
+            return bindings.length === 0;
+        }
         return bindings.length === 0 || Boolean(characterId && bindings.includes(characterId));
     });
+}
+
+function getVariantCharacterIds(avatarId, variant) {
+    const ids = new Set((Array.isArray(variant?.characterIds) ? variant.characterIds : []).map(String));
+    for (const [, binding] of Object.entries(getSettings().chatBindings)) {
+        if (binding?.avatarId === avatarId && binding?.variantId === variant?.id && binding.characterId) {
+            ids.add(String(binding.characterId));
+        }
+    }
+    return [...ids];
+}
+
+function getBoundCharacterIds(avatarId = user_avatar) {
+    const ids = new Set();
+    for (const variant of getPersonaStore(avatarId)?.variants ?? []) {
+        for (const id of getVariantCharacterIds(avatarId, variant)) {
+            ids.add(id);
+        }
+    }
+    return [...ids];
+}
+
+function getCharacterContextId(panel) {
+    const value = String(panel?.querySelector('#persona_variant_character_context')?.value || '');
+    return value || '__all__';
+}
+
+function getCharacterFilterOptions(avatarId = user_avatar) {
+    const ids = getBoundCharacterIds(avatarId);
+    const current = getCurrentCharacterContext();
+    if (current && !ids.includes(current.id)) {
+        ids.push(current.id);
+    }
+    return ids;
+}
+
+function getSelectedCharacterTarget(panel) {
+    const selectedId = getCharacterContextId(panel);
+    if (!selectedId || selectedId === '__all__' || selectedId === '__unbound__') {
+        return getCurrentCharacterContext();
+    }
+    return { id: selectedId, name: getCharacterName(selectedId) };
+}
+
+function renderCharacterContextOptions(panel) {
+    const input = panel.querySelector('#persona_variant_character_search');
+    const select = panel.querySelector('#persona_variant_character_context');
+    const settings = getSettings();
+    const search = String(input.value || '').trim().toLocaleLowerCase();
+    const ids = getCharacterFilterOptions(user_avatar);
+    const current = getCurrentCharacterContext();
+    const saved = settings.characterContext[user_avatar];
+    const preferred = saved || current?.id || '__all__';
+    const options = [
+        { id: '__all__', label: '全部版本（不按角色筛选）' },
+        { id: '__unbound__', label: '未绑定角色（通用版本）' },
+        ...ids.map(id => ({ id, label: `${getCharacterName(id)}${current?.id === id ? '（当前角色）' : ''}` })),
+    ];
+    const matchesSearch = item => !search || item.id.startsWith('__') || item.label.toLocaleLowerCase().includes(search) || item.id.toLocaleLowerCase().includes(search);
+    const filtered = options.filter(matchesSearch);
+    if (!filtered.some(item => item.id === preferred)) {
+        const selected = options.find(item => item.id === preferred);
+        if (selected) filtered.unshift(selected);
+    }
+
+    select.replaceChildren();
+    for (const optionData of filtered) {
+        const option = document.createElement('option');
+        option.value = optionData.id;
+        option.textContent = optionData.label;
+        select.append(option);
+    }
+    select.value = filtered.some(item => item.id === preferred) ? preferred : (filtered[0]?.id || '__all__');
+    return select.value;
+}
+
+function describeVersionScope(variant) {
+    const characterIds = getVariantCharacterIds(user_avatar, variant);
+    if (characterIds.length === 0) {
+        return '显示范围：通用（所有角色）';
+    }
+    return `显示范围：${characterIds.map(getCharacterName).join('、')}`;
 }
 
 function getChatBindingsForVariant(avatarId, variantId) {
@@ -199,25 +310,13 @@ function appendBindingChip(container, label, action, value) {
     container.append(button);
 }
 
-function renderBindingLists(panel, variant) {
-    const charactersList = panel.querySelector('.persona-variant-bound-characters');
+function renderChatBindings(panel, variant) {
     const chatsList = panel.querySelector('.persona-variant-bound-chats');
-    charactersList.replaceChildren();
     chatsList.replaceChildren();
 
     if (!variant) {
-        charactersList.textContent = '选择一个版本后管理绑定';
         chatsList.textContent = '选择一个版本后管理绑定';
         return;
-    }
-
-    const characterIds = Array.isArray(variant.characterIds) ? variant.characterIds : [];
-    if (characterIds.length === 0) {
-        charactersList.textContent = '未绑定角色：在所有角色下可见';
-    } else {
-        for (const characterId of characterIds) {
-            appendBindingChip(charactersList, getCharacterName(characterId), 'remove-character', characterId);
-        }
     }
 
     const chatBindings = getChatBindingsForVariant(user_avatar, variant.id);
@@ -231,6 +330,35 @@ function renderBindingLists(panel, variant) {
     }
 }
 
+function renderCharacterBindings(panel, variant) {
+    const charactersList = panel.querySelector('.persona-variant-bound-characters');
+    const currentCharacter = getSelectedCharacterTarget(panel);
+    const characterButton = panel.querySelector('#persona_variant_bind_character');
+    charactersList.replaceChildren();
+
+    if (!variant) {
+        charactersList.textContent = '选择一个版本后管理绑定';
+        characterButton.disabled = true;
+        return;
+    }
+
+    const characterIds = getVariantCharacterIds(user_avatar, variant);
+    if (characterIds.length === 0) {
+        charactersList.textContent = '未绑定角色：在所有角色下可见';
+    } else {
+        for (const characterId of characterIds) {
+            appendBindingChip(charactersList, getCharacterName(characterId), 'remove-character', characterId);
+        }
+    }
+
+    const isBoundToCurrentCharacter = Boolean(currentCharacter && characterIds.includes(currentCharacter.id));
+    characterButton.disabled = !currentCharacter;
+    characterButton.textContent = isBoundToCurrentCharacter ? '解绑当前角色' : '绑定当前角色';
+    panel.querySelector('.persona-variant-character-status').textContent = currentCharacter
+        ? `当前角色：${currentCharacter.name}`
+        : '当前没有单角色会话';
+}
+
 function render() {
     const panel = document.getElementById(PANEL_ID);
     if (!panel) {
@@ -240,7 +368,8 @@ function render() {
     const validPersona = isNamedExistingPersona();
     const store = getPersonaStore(user_avatar);
     const variants = store?.variants ?? [];
-    const visibleVariants = getVisibleVariants(variants);
+    const selectedCharacterId = renderCharacterContextOptions(panel);
+    const visibleVariants = getVisibleVariants(variants, selectedCharacterId);
     const currentCharacter = getCurrentCharacterContext();
     const currentChat = getCurrentChatContext();
     const currentChatBinding = currentChat ? getSettings().chatBindings[currentChat.key] : null;
@@ -254,9 +383,10 @@ function render() {
         const option = document.createElement('option');
         option.value = variant.id;
         const tags = [];
-        if (variant.characterIds.length === 0) {
+        const variantCharacterIds = getVariantCharacterIds(user_avatar, variant);
+        if (variantCharacterIds.length === 0) {
             tags.push('通用');
-        } else if (currentCharacter && variant.characterIds.includes(currentCharacter.id)) {
+        } else if (currentCharacter && variantCharacterIds.includes(currentCharacter.id)) {
             tags.push('当前角色');
         }
         if (currentChatBinding?.avatarId === user_avatar && currentChatBinding?.variantId === variant.id) {
@@ -270,20 +400,23 @@ function render() {
     select.value = visibleVariants.some(item => item.id === store?.activeId) ? store.activeId : '';
     select.disabled = !validPersona || visibleVariants.length === 0;
     const variant = visibleVariants.find(item => item.id === select.value) ?? null;
-    const isBoundToCurrentCharacter = Boolean(variant && currentCharacter && variant.characterIds.includes(currentCharacter.id));
+    const selectedCharacter = getSelectedCharacterTarget(panel);
 
     panel.querySelector('#persona_variant_save').disabled = !validPersona;
-    panel.querySelector('#persona_variant_apply').disabled = !validPersona || !variant;
-    panel.querySelector('#persona_variant_overwrite').disabled = !validPersona || !variant;
+    panel.querySelector('#persona_variant_overwrite').disabled = !validPersona || !variant || getSettings().autoSaveEnabled;
     panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant;
     panel.querySelector('#persona_variant_delete').disabled = !validPersona || !variant;
+    panel.querySelector('#persona_variant_auto_save').checked = Boolean(getSettings().autoSaveEnabled);
+    panel.querySelector('.persona-variant-selected-context').textContent = selectedCharacterId === '__all__'
+        ? '当前父级：全部版本'
+        : selectedCharacterId === '__unbound__'
+            ? '当前父级：未绑定角色'
+            : `当前父级：${selectedCharacter?.name || getCharacterName(selectedCharacterId)}`;
+    panel.querySelector('.persona-variant-scope-status').textContent = variant
+        ? describeVersionScope(variant)
+        : '新版本默认未绑定角色，可在下方手动绑定多个角色';
 
-    const characterButton = panel.querySelector('#persona_variant_bind_character');
-    characterButton.disabled = !validPersona || !variant || !currentCharacter;
-    characterButton.textContent = isBoundToCurrentCharacter ? '解绑当前角色' : '绑定当前角色';
-    panel.querySelector('.persona-variant-character-status').textContent = currentCharacter
-        ? `当前角色：${currentCharacter.name}`
-        : '当前没有单角色会话';
+    renderCharacterBindings(panel, variant);
 
     const chatBindButton = panel.querySelector('#persona_variant_bind_chat');
     chatBindButton.disabled = !validPersona || !variant || !currentChat;
@@ -303,9 +436,9 @@ function render() {
             : `${variants.length} 个版本`;
     const chatCount = variant ? getChatBindingsForVariant(user_avatar, variant.id).length : 0;
     panel.querySelector('.persona-variant-binding-summary').textContent = variant
-        ? `已选版本：${variant.characterIds.length} 个角色 · ${chatCount} 个聊天`
+        ? `已选版本：${getVariantCharacterIds(user_avatar, variant).length} 个角色 · ${chatCount} 个聊天`
         : '请选择一个可见版本';
-    renderBindingLists(panel, variant);
+    renderChatBindings(panel, variant);
 }
 
 function togglePanel() {
@@ -338,14 +471,24 @@ async function saveVariant() {
 
     const store = getPersonaStore(user_avatar, true);
     const personaName = String(power_user.personas[user_avatar] ?? 'Persona');
-    const suggestedName = `${personaName} - ${store.variants.length + 1}`.trim();
+    const currentCharacter = getSelectedCharacterTarget(document.getElementById(PANEL_ID));
+    const suggestedName = currentCharacter
+        ? `${personaName} - ${currentCharacter.name} - ${store.variants.length + 1}`.trim()
+        : `${personaName} - ${store.variants.length + 1}`.trim();
     const name = await askForName('保存当前人设版本', suggestedName);
     if (!name) {
         return;
     }
 
     const now = new Date().toISOString();
-    const variant = { id: makeId(), name, ...snapshot, characterIds: [], createdAt: now, updatedAt: now };
+    const variant = {
+        id: makeId(),
+        name,
+        ...snapshot,
+        characterIds: currentCharacter?.id && currentCharacter.id !== '__all__' && currentCharacter.id !== '__unbound__' ? [currentCharacter.id] : [],
+        createdAt: now,
+        updatedAt: now,
+    };
     store.variants.push(variant);
     store.activeId = variant.id;
     saveSettingsDebounced();
@@ -357,6 +500,17 @@ function selectedVariant() {
     const selectedId = document.querySelector('#persona_variant_select')?.value;
     const store = getPersonaStore(user_avatar);
     return store?.variants.find(item => item.id === selectedId) ?? null;
+}
+
+function rememberCharacterContext(event) {
+    const value = String(event.currentTarget.value || '__all__');
+    getSettings().characterContext[user_avatar] = value;
+    saveSettingsDebounced();
+    render();
+}
+
+function filterCharacterSearch() {
+    render();
 }
 
 async function applyVariantRecord(avatarId, variantId, { notify = true, automatic = false, expectedChatKey = '' } = {}) {
@@ -414,19 +568,10 @@ async function applyVariantRecord(avatarId, variantId, { notify = true, automati
     return true;
 }
 
-async function applyVariant() {
-    const variant = selectedVariant();
-    if (!variant) {
-        return;
-    }
-    await applyVariantRecord(user_avatar, variant.id);
-}
-
-async function overwriteVariant() {
-    const variant = selectedVariant();
+function saveCurrentToVariant(variant, notify = false) {
     const snapshot = captureCurrentPersona();
     if (!variant || !snapshot) {
-        return;
+        return false;
     }
 
     Object.assign(variant, snapshot, { updatedAt: new Date().toISOString() });
@@ -435,7 +580,43 @@ async function overwriteVariant() {
     store.activeId = variant.id;
     saveSettingsDebounced();
     render();
-    toastr.success(`已用当前内容更新“${getVariantLabel(variant)}”。`, '人设版本管理');
+    if (notify) {
+        toastr.success(`已用当前内容更新“${getVariantLabel(variant)}”。`, '人设版本管理');
+    }
+    return true;
+}
+
+function overwriteVariant() {
+    saveCurrentToVariant(selectedVariant(), true);
+}
+
+function scheduleAutoSave(immediate = false) {
+    clearTimeout(autoSaveTimer);
+    if (!getSettings().autoSaveEnabled) {
+        return;
+    }
+    autoSaveTimer = setTimeout(() => {
+        const variant = selectedVariant();
+        if (saveCurrentToVariant(variant, false)) {
+            const status = document.querySelector('.persona-variant-auto-save-status');
+            if (status) {
+                status.textContent = `已自动保存 ${new Date().toLocaleTimeString()}`;
+            }
+        }
+    }, immediate ? 0 : AUTO_SAVE_DELAY);
+}
+
+function onAutoSaveChanged(event) {
+    getSettings().autoSaveEnabled = Boolean(event.currentTarget.checked);
+    saveSettingsDebounced();
+    render();
+    if (getSettings().autoSaveEnabled) {
+        scheduleAutoSave(true);
+        toastr.success('已开启修改时自动保存；当前版本会随编辑即时更新。', '人设版本管理');
+    } else {
+        clearTimeout(autoSaveTimer);
+        toastr.info('已关闭自动保存；修改后请点击“更新版本”。', '人设版本管理');
+    }
 }
 
 async function renameVariant() {
@@ -485,19 +666,23 @@ async function deleteVariant() {
     render();
 }
 
-function onSelectionChanged(event) {
+async function onSelectionChanged(event) {
     const selectedId = event.currentTarget.value;
     const store = getPersonaStore(user_avatar);
     if (store) {
         store.activeId = selectedId;
         saveSettingsDebounced();
     }
-    render();
+    if (selectedId) {
+        await applyVariantRecord(user_avatar, selectedId);
+    } else {
+        render();
+    }
 }
 
 function toggleCurrentCharacterBinding() {
     const variant = selectedVariant();
-    const character = getCurrentCharacterContext();
+    const character = getSelectedCharacterTarget(document.getElementById(PANEL_ID));
     if (!variant || !character) {
         return;
     }
@@ -524,6 +709,10 @@ async function bindCurrentChat() {
     }
 
     const previous = getSettings().chatBindings[chatContext.key];
+    variant.characterIds ??= [];
+    if (!variant.characterIds.includes(chatContext.characterId)) {
+        variant.characterIds.push(chatContext.characterId);
+    }
     getSettings().chatBindings[chatContext.key] = {
         avatarId: user_avatar,
         variantId: variant.id,
@@ -574,7 +763,7 @@ function onBindingChipClick(event) {
     }
 
     if (button.dataset.bindingAction === 'remove-character') {
-        variant.characterIds = variant.characterIds.filter(id => id !== button.dataset.bindingValue);
+        variant.characterIds = (variant.characterIds ?? []).filter(id => id !== button.dataset.bindingValue);
         variant.updatedAt = new Date().toISOString();
         saveSettingsDebounced();
         render();
@@ -614,11 +803,13 @@ function mount() {
             <span><i class="fa-solid fa-layer-group fa-fw"></i> 人设版本</span>
             <span class="persona-variants-count text_muted">0 个版本</span>
         </div>
+        <div class="persona-variant-context-picker">
+            <input id="persona_variant_character_search" class="text_pole" type="search" placeholder="搜索已绑定的角色…" aria-label="搜索已绑定的角色">
+            <select id="persona_variant_character_context" class="text_pole" aria-label="选择角色父级"></select>
+            <span class="persona-variant-selected-context text_muted">当前父级：全部版本</span>
+        </div>
         <div class="persona-variants-picker">
             <select id="persona_variant_select" class="text_pole" aria-label="已保存的人设版本"></select>
-            <button id="persona_variant_apply" class="menu_button menu_button_icon" type="button" title="应用选中的版本">
-                <i class="fa-solid fa-play fa-fw"></i><span>应用</span>
-            </button>
         </div>
         <div class="persona-variants-actions">
             <button id="persona_variant_save" class="menu_button menu_button_icon" type="button" title="将当前人设内容保存为新版本">
@@ -633,11 +824,20 @@ function mount() {
             <button id="persona_variant_delete" class="menu_button red_button" type="button" title="删除版本" aria-label="删除版本">
                 <i class="fa-solid fa-trash fa-fw"></i>
             </button>
+            <label class="persona-variant-auto-save checkbox_label" title="开启后，编辑当前人设会自动更新已选版本">
+                <input id="persona_variant_auto_save" type="checkbox">
+                <span>修改时自动保存</span>
+            </label>
+            <span class="persona-variant-auto-save-status text_muted"></span>
         </div>
         <div class="persona-variant-bindings">
             <div class="persona-variant-bindings-heading">
                 <span><i class="fa-solid fa-link fa-fw"></i> 角色与聊天绑定</span>
                 <span class="persona-variant-binding-summary text_muted">请选择一个可见版本</span>
+            </div>
+            <div class="persona-variant-binding-list-row">
+                <span class="persona-variant-binding-label">角色范围</span>
+                <div class="persona-variant-scope-status text_muted">新版本默认未绑定角色，可在下方手动绑定多个角色</div>
             </div>
             <div class="persona-variant-binding-row">
                 <span class="persona-variant-character-status">当前没有单角色会话</span>
@@ -662,12 +862,14 @@ function mount() {
 
     controls.insertAdjacentElement('afterend', panel);
     toggle.addEventListener('click', togglePanel);
+    panel.querySelector('#persona_variant_character_context').addEventListener('change', rememberCharacterContext);
+    panel.querySelector('#persona_variant_character_search').addEventListener('input', filterCharacterSearch);
     panel.querySelector('#persona_variant_select').addEventListener('change', onSelectionChanged);
     panel.querySelector('#persona_variant_save').addEventListener('click', saveVariant);
-    panel.querySelector('#persona_variant_apply').addEventListener('click', applyVariant);
     panel.querySelector('#persona_variant_overwrite').addEventListener('click', overwriteVariant);
     panel.querySelector('#persona_variant_rename').addEventListener('click', renameVariant);
     panel.querySelector('#persona_variant_delete').addEventListener('click', deleteVariant);
+    panel.querySelector('#persona_variant_auto_save').addEventListener('change', onAutoSaveChanged);
     panel.querySelector('#persona_variant_bind_character').addEventListener('click', toggleCurrentCharacterBinding);
     panel.querySelector('#persona_variant_bind_chat').addEventListener('click', bindCurrentChat);
     panel.querySelector('#persona_variant_unbind_chat').addEventListener('click', unbindCurrentChat);
@@ -697,6 +899,11 @@ function subscribeIfSupported(eventName, handler) {
 
 function onPersonaRenamed() {
     render();
+}
+
+function onPersonaUpdated() {
+    render();
+    scheduleAutoSave(false);
 }
 
 function onPersonaDeleted({ avatarId } = {}) {
@@ -761,6 +968,10 @@ async function autoApplyCurrentChatBinding() {
 
 function scheduleContextChange() {
     clearTimeout(contextChangeTimer);
+    const current = getCurrentCharacterContext();
+    if (current && document.getElementById(PANEL_ID)) {
+        getSettings().characterContext[user_avatar] = current.id;
+    }
     contextChangeTimer = setTimeout(autoApplyCurrentChatBinding, AUTO_APPLY_DELAY);
 }
 
@@ -768,12 +979,17 @@ jQuery(() => {
     getSettings();
     mountWhenAvailable();
     subscribeIfSupported(event_types.PERSONA_CHANGED, render);
-    subscribeIfSupported(event_types.PERSONA_UPDATED, render);
+    subscribeIfSupported(event_types.PERSONA_UPDATED, onPersonaUpdated);
     subscribeIfSupported(event_types.PERSONA_RENAMED, onPersonaRenamed);
     subscribeIfSupported(event_types.PERSONA_DELETED, onPersonaDeleted);
     subscribeIfSupported(event_types.SETTINGS_UPDATED, render);
     subscribeIfSupported(event_types.CHAT_CHANGED, scheduleContextChange);
     subscribeIfSupported(event_types.APP_READY, scheduleContextChange);
     $(document).on('click.personaVariants', '#user_avatar_block .avatar-container', () => setTimeout(render, 0));
+    $(document).on(
+        'input.personaVariants change.personaVariants',
+        '#persona_description, #persona_description_position, #persona_depth_value, #persona_depth_role',
+        () => scheduleAutoSave(false),
+    );
     scheduleContextChange();
 });
