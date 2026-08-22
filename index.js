@@ -201,7 +201,7 @@ function getCharacterFilterOptions(avatarId = user_avatar) {
 function getSelectedCharacterTarget(panel) {
     const selectedId = getCharacterContextId(panel);
     if (!selectedId || selectedId === '__all__' || selectedId === '__unbound__') {
-        return getCurrentCharacterContext();
+        return null;
     }
     return { id: selectedId, name: getCharacterName(selectedId) };
 }
@@ -214,9 +214,8 @@ function renderCharacterContextOptions(panel) {
     const ids = getCharacterFilterOptions(user_avatar);
     const current = getCurrentCharacterContext();
     const saved = settings.characterContext[user_avatar];
-    const preferred = saved || current?.id || '__all__';
+    const preferred = saved && saved !== '__all__' ? saved : (current?.id || '__unbound__');
     const options = [
-        { id: '__all__', label: '全部版本（不按角色筛选）' },
         { id: '__unbound__', label: '未绑定角色（通用版本）' },
         ...ids.map(id => ({ id, label: `${getCharacterName(id)}${current?.id === id ? '（当前角色）' : ''}` })),
     ];
@@ -234,7 +233,7 @@ function renderCharacterContextOptions(panel) {
         option.textContent = optionData.label;
         select.append(option);
     }
-    select.value = filtered.some(item => item.id === preferred) ? preferred : (filtered[0]?.id || '__all__');
+    select.value = filtered.some(item => item.id === preferred) ? preferred : (filtered[0]?.id || '__unbound__');
     return select.value;
 }
 
@@ -277,7 +276,7 @@ function captureCurrentPersona() {
 }
 
 function getVariantLabel(variant) {
-    return variant.name || '未命名版本';
+    return variant?.name || '未命名版本';
 }
 
 function refreshCurrentPersonaCard() {
@@ -332,6 +331,7 @@ function renderChatBindings(panel, variant) {
 
 function renderCharacterBindings(panel, variant) {
     const charactersList = panel.querySelector('.persona-variant-bound-characters');
+    const selectedContextId = getCharacterContextId(panel);
     const currentCharacter = getSelectedCharacterTarget(panel);
     const characterButton = panel.querySelector('#persona_variant_bind_character');
     charactersList.replaceChildren();
@@ -356,7 +356,11 @@ function renderCharacterBindings(panel, variant) {
     characterButton.textContent = isBoundToCurrentCharacter ? '解绑当前角色' : '绑定当前角色';
     panel.querySelector('.persona-variant-character-status').textContent = currentCharacter
         ? `当前角色：${currentCharacter.name}`
-        : '当前没有单角色会话';
+        : selectedContextId === '__unbound__'
+            ? '通用版本不能绑定角色'
+            : selectedContextId === '__all__'
+                ? '请选择一个具体角色父级后绑定'
+                : '当前没有单角色会话';
 }
 
 function render() {
@@ -407,25 +411,26 @@ function render() {
     panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant;
     panel.querySelector('#persona_variant_delete').disabled = !validPersona || !variant;
     panel.querySelector('#persona_variant_auto_save').checked = Boolean(getSettings().autoSaveEnabled);
-    panel.querySelector('.persona-variant-selected-context').textContent = selectedCharacterId === '__all__'
-        ? '当前父级：全部版本'
-        : selectedCharacterId === '__unbound__'
+    panel.querySelector('.persona-variant-selected-context').textContent = selectedCharacterId === '__unbound__'
             ? '当前父级：未绑定角色'
             : `当前父级：${selectedCharacter?.name || getCharacterName(selectedCharacterId)}`;
-    panel.querySelector('.persona-variant-scope-status').textContent = variant
-        ? describeVersionScope(variant)
-        : '新版本默认未绑定角色，可在下方手动绑定多个角色';
-
-    renderCharacterBindings(panel, variant);
-
-    const chatBindButton = panel.querySelector('#persona_variant_bind_chat');
+    const chatBindButton = panel.querySelector('#persona_variant_chat_action');
     chatBindButton.disabled = !validPersona || !variant || !currentChat;
-    chatBindButton.textContent = currentChatBinding ? '重新绑定当前聊天' : '绑定当前聊天';
-    panel.querySelector('#persona_variant_unbind_chat').disabled = !currentChatBinding;
+    const selectedChatIsCurrent = Boolean(currentChatBinding && variant && currentChatBinding.avatarId === user_avatar && currentChatBinding.variantId === variant.id);
+    chatBindButton.textContent = !currentChatBinding
+        ? '绑定当前聊天'
+        : selectedChatIsCurrent
+            ? '解除当前聊天绑定'
+            : '重新绑定当前聊天';
+    chatBindButton.title = !currentChatBinding
+        ? '将当前聊天绑定到此版本'
+        : selectedChatIsCurrent
+            ? '解除当前聊天与此版本的绑定'
+            : '将当前聊天从旧版本重新绑定到当前选中的版本';
     panel.querySelector('.persona-variant-chat-status').textContent = !currentChat
         ? '当前没有可绑定的聊天'
         : currentChatBinding
-            ? `当前聊天已绑定：${describeVariantBinding(currentChatBinding)}`
+            ? `当前聊天已绑定：${getVariantLabel(getVariant(currentChatBinding.avatarId, currentChatBinding.variantId))}`
             : '当前聊天：未绑定（不会自动应用）';
 
     const hiddenCount = variants.length - visibleVariants.length;
@@ -438,6 +443,7 @@ function render() {
     panel.querySelector('.persona-variant-binding-summary').textContent = variant
         ? `已选版本：${getVariantCharacterIds(user_avatar, variant).length} 个角色 · ${chatCount} 个聊天`
         : '请选择一个可见版本';
+    renderCharacterBindings(panel, variant);
     renderChatBindings(panel, variant);
 }
 
@@ -485,7 +491,7 @@ async function saveVariant() {
         id: makeId(),
         name,
         ...snapshot,
-        characterIds: currentCharacter?.id && currentCharacter.id !== '__all__' && currentCharacter.id !== '__unbound__' ? [currentCharacter.id] : [],
+        characterIds: currentCharacter?.id ? [currentCharacter.id] : [],
         createdAt: now,
         updatedAt: now,
     };
@@ -692,6 +698,9 @@ function toggleCurrentCharacterBinding() {
     if (index >= 0) {
         variant.characterIds.splice(index, 1);
         toastr.info(`已解除“${getVariantLabel(variant)}”与角色“${character.name}”的绑定。`, '人设版本管理');
+    } else if (getChatBindingsForVariant(user_avatar, variant.id).some(([, binding]) => binding.characterId === character.id)) {
+        toastr.warning('该角色绑定来自聊天绑定，请先解除对应聊天绑定。', '人设版本管理');
+        return;
     } else {
         variant.characterIds.push(character.id);
         toastr.success(`已将“${getVariantLabel(variant)}”绑定到角色“${character.name}”。`, '人设版本管理');
@@ -732,6 +741,18 @@ async function bindCurrentChat() {
         previous ? `已将当前聊天重新绑定到“${getVariantLabel(variant)}”。` : `已将当前聊天绑定到“${getVariantLabel(variant)}”。`,
         '人设版本管理',
     );
+}
+
+async function toggleCurrentChatBinding() {
+    const chatContext = getCurrentChatContext();
+    const binding = chatContext ? getSettings().chatBindings[chatContext.key] : null;
+    const variant = selectedVariant();
+    const selectedChatIsCurrent = Boolean(binding && variant && binding.avatarId === user_avatar && binding.variantId === variant.id);
+    if (selectedChatIsCurrent) {
+        unbindChat(chatContext.key);
+        return;
+    }
+    await bindCurrentChat();
 }
 
 function unbindChat(chatKey, notify = true) {
@@ -835,12 +856,8 @@ function mount() {
                 <span><i class="fa-solid fa-link fa-fw"></i> 角色与聊天绑定</span>
                 <span class="persona-variant-binding-summary text_muted">请选择一个可见版本</span>
             </div>
-            <div class="persona-variant-binding-list-row">
-                <span class="persona-variant-binding-label">角色范围</span>
-                <div class="persona-variant-scope-status text_muted">新版本默认未绑定角色，可在下方手动绑定多个角色</div>
-            </div>
             <div class="persona-variant-binding-row">
-                <span class="persona-variant-character-status">当前没有单角色会话</span>
+                <span class="persona-variant-character-status">请选择一个具体角色父级后绑定</span>
                 <button id="persona_variant_bind_character" class="menu_button menu_button_icon" type="button">绑定当前角色</button>
             </div>
             <div class="persona-variant-binding-list-row">
@@ -849,15 +866,13 @@ function mount() {
             </div>
             <div class="persona-variant-binding-row">
                 <span class="persona-variant-chat-status">当前没有可绑定的聊天</span>
-                <div class="persona-variant-binding-buttons">
-                    <button id="persona_variant_bind_chat" class="menu_button menu_button_icon" type="button">绑定当前聊天</button>
-                    <button id="persona_variant_unbind_chat" class="menu_button" type="button">解除聊天绑定</button>
-                </div>
+                <button id="persona_variant_chat_action" class="menu_button menu_button_icon" type="button">绑定当前聊天</button>
             </div>
             <div class="persona-variant-binding-list-row">
                 <span class="persona-variant-binding-label">绑定聊天</span>
                 <div class="persona-variant-bound-chats text_muted">选择一个版本后管理绑定</div>
             </div>
+            <small class="persona-variant-binding-help text_muted">绑定后进入此聊天会自动切换并应用版本；未绑定聊天不会自动应用。</small>
         </div>`;
 
     controls.insertAdjacentElement('afterend', panel);
@@ -871,8 +886,7 @@ function mount() {
     panel.querySelector('#persona_variant_delete').addEventListener('click', deleteVariant);
     panel.querySelector('#persona_variant_auto_save').addEventListener('change', onAutoSaveChanged);
     panel.querySelector('#persona_variant_bind_character').addEventListener('click', toggleCurrentCharacterBinding);
-    panel.querySelector('#persona_variant_bind_chat').addEventListener('click', bindCurrentChat);
-    panel.querySelector('#persona_variant_unbind_chat').addEventListener('click', unbindCurrentChat);
+    panel.querySelector('#persona_variant_chat_action').addEventListener('click', toggleCurrentChatBinding);
     panel.querySelector('.persona-variant-bindings').addEventListener('click', onBindingChipClick);
     render();
     return true;

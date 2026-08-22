@@ -72,6 +72,16 @@
     flex: 1 1 12rem;
 }
 
+.persona-variant-character-status {
+    min-width: 12rem;
+    flex: 1 1 12rem;
+}
+
+.persona-variant-binding-help {
+    display: block;
+    margin-top: 0.25rem;
+}
+
 .persona-variant-binding-buttons {
     flex-wrap: wrap;
 }
@@ -89,6 +99,13 @@
 }
 
 .persona-variant-bound-chats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.persona-variant-bound-characters {
     display: flex;
     flex-wrap: wrap;
     gap: 0.35rem;
