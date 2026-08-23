@@ -25,6 +25,8 @@ const AUTO_SAVE_DELAY = 350;
 let selectedBindingCharacterId = '';
 let selectedBindingContextKey = '';
 let characterLibraryExpanded = false;
+let duplicateNamePromptInProgress = false;
+const promptedDuplicateNameKeys = new Set();
 
 let contextChangeTimer = null;
 let autoSaveTimer = null;
@@ -48,10 +50,11 @@ function makeId() {
 }
 
 function getSettings() {
-    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 9, personas: {}, chatBindings: {}, autoSaveEnabled: false };
+    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 10, personas: {}, chatBindings: {}, characterAliases: {}, autoSaveEnabled: false };
     settings.schemaVersion ??= 1;
     settings.personas ??= {};
     settings.chatBindings ??= {};
+    settings.characterAliases ??= {};
     settings.autoSaveEnabled ??= false;
 
     if (settings.schemaVersion < 2) {
@@ -94,7 +97,7 @@ function getSettings() {
         for (const store of Object.values(settings.personas)) {
             for (const variant of store?.variants ?? []) {
                 const namedCharacters = [...new Set((variant.characterNames ?? []).map(name => normalizeCharacterName(name)).filter(Boolean))];
-                if (namedCharacters.length !== 1 || (variant.characterIds ?? []).length !== 1) {
+                if (namedCharacters.length !== 1 || (variant.characterIds ?? []).length > 1) {
                     continue;
                 }
 
@@ -105,6 +108,12 @@ function getSettings() {
             }
         }
         settings.schemaVersion = 9;
+        saveSettingsDebounced();
+    }
+
+    if (settings.schemaVersion < 10) {
+        settings.characterAliases ??= {};
+        settings.schemaVersion = 10;
         saveSettingsDebounced();
     }
 
@@ -121,7 +130,7 @@ function getSettings() {
     for (const store of Object.values(settings.personas)) {
         for (const variant of store.variants) {
             const namedCharacters = [...new Set((variant.characterNames ?? []).map(name => normalizeCharacterName(name)).filter(Boolean))];
-            if (namedCharacters.length !== 1 || variant.characterIds.length !== 1) {
+            if (namedCharacters.length !== 1 || variant.characterIds.length > 1) {
                 continue;
             }
 
@@ -129,7 +138,7 @@ function getSettings() {
             const resolvedId = matches.length === 1 ? String(matches[0]?.avatar || '') : '';
             if (resolvedId && resolvedId !== variant.characterIds[0]) {
                 variant.characterIds = [resolvedId];
-                variant.characterNames = [String(matches[0].name || '')].filter(Boolean);
+                variant.characterNames = [cleanCharacterName(matches[0].name, matches[0].avatar)].filter(Boolean);
                 repairedCharacterBindings = true;
             }
         }
@@ -193,15 +202,35 @@ function getCurrentCharacterContext() {
 
     return {
         id: String(character.avatar),
-        name: String(character.name || character.avatar),
+        name: getCharacterDisplayName(character.avatar, character.name),
     };
 }
 
 function normalizeCharacterName(name) {
     return String(name ?? '')
         .trim()
+        .replace(/^.*[\\/]/, '')
         .replace(/\.(png|jpg|jpeg|webp)$/i, '')
         .toLocaleLowerCase();
+}
+
+function cleanCharacterName(name, fallback = '') {
+    const value = String(name || fallback || '').trim().replace(/^.*[\\/]/, '');
+    return value.replace(/\.(png|jpg|jpeg|webp)$/i, '').trim() || '未命名角色';
+}
+
+function getCharacterAlias(characterId) {
+    return String(getSettings().characterAliases?.[String(characterId)] ?? '').trim();
+}
+
+function getCharacterDisplayName(characterId, fallback = '') {
+    const alias = getCharacterAlias(characterId);
+    if (alias) {
+        return alias;
+    }
+
+    const character = characters?.find(item => String(item?.avatar) === String(characterId));
+    return cleanCharacterName(character?.name, fallback || characterId);
 }
 
 function isCharacterIdForContext(characterId, context) {
@@ -221,21 +250,73 @@ function getBoundCharacterOptions() {
     const ids = new Set((store?.variants ?? []).flatMap(variant => variant.characterIds ?? []).map(String));
     const options = [...ids].map(id => {
         const character = characters?.find(item => String(item?.avatar) === String(id));
-        const name = String(character?.name || id);
-        return { id, name, label: name };
+        const baseName = cleanCharacterName(character?.name, id);
+        const name = getCharacterDisplayName(id, baseName);
+        return { id, name, label: name, baseName };
     });
-    const nameCounts = options.reduce((counts, option) => counts.set(option.name, (counts.get(option.name) ?? 0) + 1), new Map());
+    const nameCounts = options.reduce((counts, option) => counts.set(option.baseName, (counts.get(option.baseName) ?? 0) + 1), new Map());
+    const nameIndexes = new Map();
     for (const option of options) {
-        if (nameCounts.get(option.name) > 1) {
-            option.label = option.name;
-            option.name = `${option.name} · ${option.id.slice(-8)}`;
+        if (nameCounts.get(option.baseName) > 1 && !getCharacterAlias(option.id)) {
+            const index = (nameIndexes.get(option.baseName) ?? 0) + 1;
+            nameIndexes.set(option.baseName, index);
+            option.name = `${option.baseName}（角色 ${index}）`;
         }
     }
     const currentCharacter = getCurrentCharacterContext();
     if (currentCharacter && !options.some(option => isCharacterIdForContext(option.id, currentCharacter))) {
-        options.push({ id: currentCharacter.id, name: currentCharacter.name, label: currentCharacter.name, transient: true });
+        options.push({ id: currentCharacter.id, name: currentCharacter.name, label: currentCharacter.name, baseName: currentCharacter.name, transient: true });
     }
     return options.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function promptDuplicateCharacterNames(options) {
+    if (duplicateNamePromptInProgress) {
+        return;
+    }
+
+    const groups = new Map();
+    for (const option of options) {
+        const list = groups.get(option.baseName) ?? [];
+        list.push(option);
+        groups.set(option.baseName, list);
+    }
+
+    const pendingGroups = [...groups.entries()]
+        .filter(([, group]) => group.length > 1)
+        .map(([baseName, group]) => ({
+            baseName,
+            group,
+            key: `${user_avatar}:${baseName}:${group.map(option => option.id).sort().join('|')}`,
+        }))
+        .filter(item => !promptedDuplicateNameKeys.has(item.key) && item.group.some(option => !getCharacterAlias(option.id)));
+
+    if (!pendingGroups.length) {
+        return;
+    }
+
+    pendingGroups.forEach(item => promptedDuplicateNameKeys.add(item.key));
+    duplicateNamePromptInProgress = true;
+    try {
+        for (const { baseName, group } of pendingGroups) {
+            for (const [index, option] of group.entries()) {
+                if (getCharacterAlias(option.id)) {
+                    continue;
+                }
+
+                const suggested = `${baseName}（角色 ${index + 1}）`;
+                const value = await Popup.show.input('区分同名角色', '请输入此角色的显示名称：', suggested);
+                const alias = typeof value === 'string' ? value.trim() : '';
+                if (alias) {
+                    getSettings().characterAliases[String(option.id)] = alias;
+                    saveSettingsDebounced();
+                }
+            }
+        }
+    } finally {
+        duplicateNamePromptInProgress = false;
+        render();
+    }
 }
 
 function getBoundVariantsForCharacter(characterId) {
@@ -283,7 +364,7 @@ function getCurrentChatContext() {
         key: encodeURIComponent(normalizedChatId),
         chatId: normalizedChatId,
         characterId,
-        characterName: String(character.name || characterId),
+        characterName: cleanCharacterName(character.name, characterId),
     };
 }
 
@@ -335,7 +416,7 @@ function refreshCurrentPersonaCard() {
 }
 
 function getCharacterName(characterId) {
-    return String(characters?.find(character => character?.avatar === characterId)?.name || characterId);
+    return getCharacterDisplayName(characterId, characterId);
 }
 
 function getSelectedBindingCharacterId() {
@@ -346,6 +427,7 @@ function renderCharacterBindingBrowser(panel) {
     const characterSelect = panel.querySelector('#persona_variant_character_select');
     const boundVersions = panel.querySelector('#persona_variant_character_versions');
     const characterOptions = getBoundCharacterOptions();
+    void promptDuplicateCharacterNames(characterOptions);
 
     characterSelect.replaceChildren();
     const empty = document.createElement('option');
