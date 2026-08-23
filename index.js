@@ -260,7 +260,7 @@ function getBoundCharacterOptions() {
         if (nameCounts.get(option.baseName) > 1 && !getCharacterAlias(option.id)) {
             const index = (nameIndexes.get(option.baseName) ?? 0) + 1;
             nameIndexes.set(option.baseName, index);
-            option.name = `${option.baseName}（角色 ${index}）`;
+            option.name = `${option.baseName}-`;
         }
     }
     const currentCharacter = getCurrentCharacterContext();
@@ -304,8 +304,8 @@ async function promptDuplicateCharacterNames(options) {
                     continue;
                 }
 
-                const suggested = `${baseName}（角色 ${index + 1}）`;
-                const value = await Popup.show.input('区分同名角色', '请输入此角色的显示名称：', suggested);
+                const suggested = `${baseName}-`;
+                const value = await Popup.show.input(`编辑角色库名称 (${index + 1}/${group.length})`, '请输入此角色的显示名称：', suggested);
                 const alias = typeof value === 'string' ? value.trim() : '';
                 if (alias) {
                     getSettings().characterAliases[String(option.id)] = alias;
@@ -317,6 +317,28 @@ async function promptDuplicateCharacterNames(options) {
         duplicateNamePromptInProgress = false;
         render();
     }
+}
+
+async function editSelectedCharacterAlias() {
+    const characterId = getSelectedBindingCharacterId();
+    if (!characterId) {
+        return;
+    }
+
+    const currentName = getCharacterDisplayName(characterId, characterId);
+    const value = await Popup.show.input('编辑角色库名称', '请输入角色库显示名称：', currentName);
+    if (typeof value !== 'string') {
+        return;
+    }
+
+    const alias = value.trim();
+    if (!alias) {
+        delete getSettings().characterAliases[String(characterId)];
+    } else {
+        getSettings().characterAliases[String(characterId)] = alias;
+    }
+    saveSettingsDebounced();
+    render();
 }
 
 function getBoundVariantsForCharacter(characterId) {
@@ -331,7 +353,7 @@ function getSelectedLibraryCharacterContext() {
     }
 
     const option = getBoundCharacterOptions().find(item => item.id === selectedBindingCharacterId);
-    return option ? { id: option.id, name: option.label || option.name } : null;
+    return option ? { id: option.id, name: option.name } : null;
 }
 
 function hasCharacterBinding(variant) {
@@ -462,6 +484,8 @@ function renderCharacterBindingBrowser(panel) {
     characterSelect.value = selectedBindingCharacterId;
     boundVersions.replaceChildren();
     const versionsToggle = panel.querySelector('#persona_variant_character_versions_toggle');
+    const editCharacterButton = panel.querySelector('#persona_variant_character_edit');
+    editCharacterButton.disabled = !selectedBindingCharacterId;
     if (!selectedBindingCharacterId) {
         versionsToggle.disabled = true;
         versionsToggle.textContent = '已绑定版本';
@@ -593,10 +617,13 @@ async function saveVariant() {
     const selectedCharacterId = getSelectedBindingCharacterId();
     const targetCharacterId = selectedCharacterId || chatContext?.characterId || '';
     const currentCharacter = getCurrentCharacterContext();
+    const selectedCharacter = getSelectedLibraryCharacterContext();
     const targetCharacterName = targetCharacterId
-        ? currentCharacter && isCharacterIdForContext(targetCharacterId, currentCharacter)
-            ? currentCharacter.name
-            : getCharacterName(targetCharacterId)
+        ? selectedCharacter?.id === targetCharacterId
+            ? selectedCharacter.name
+            : currentCharacter && isCharacterIdForContext(targetCharacterId, currentCharacter)
+                ? currentCharacter.name
+                : getCharacterName(targetCharacterId)
         : chatContext?.characterName;
     const suggestedName = targetCharacterName
         ? `${personaName} - ${targetCharacterName} -`
@@ -907,6 +934,9 @@ function mount() {
         <div class="persona-variant-character-section persona-variant-character-section-top">
             <div class="persona-variant-character-heading">
                 <span><i class="fa-solid fa-user-group fa-fw"></i> 角色库</span>
+                <button id="persona_variant_character_edit" class="menu_button menu_button_icon" type="button" title="编辑所选角色库名称">
+                    <i class="fa-solid fa-pencil fa-fw"></i><span>编辑名称</span>
+                </button>
             </div>
             <div class="persona-variant-character-browser">
                 <div class="persona-variant-character-parent">
@@ -967,6 +997,7 @@ function mount() {
     panel.querySelector('#persona_variant_delete').addEventListener('click', deleteVariant);
     panel.querySelector('#persona_variant_auto_save').addEventListener('change', onAutoSaveChanged);
     panel.querySelector('#persona_variant_bind_character').addEventListener('click', bindSelectedVariantToCurrentCharacter);
+    panel.querySelector('#persona_variant_character_edit').addEventListener('click', editSelectedCharacterAlias);
     panel.querySelector('#persona_variant_bind_chat').addEventListener('click', bindCurrentChat);
     panel.querySelector('#persona_variant_unbind_chat').addEventListener('click', unbindCurrentChat);
     panel.querySelector('#persona_variant_character_versions_toggle').addEventListener('click', () => {
