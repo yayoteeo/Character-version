@@ -48,7 +48,7 @@ function makeId() {
 }
 
 function getSettings() {
-    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 8, personas: {}, chatBindings: {}, autoSaveEnabled: false };
+    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 9, personas: {}, chatBindings: {}, autoSaveEnabled: false };
     settings.schemaVersion ??= 1;
     settings.personas ??= {};
     settings.chatBindings ??= {};
@@ -90,6 +90,24 @@ function getSettings() {
         settings.schemaVersion = 8;
     }
 
+    if (settings.schemaVersion < 9) {
+        for (const store of Object.values(settings.personas)) {
+            for (const variant of store?.variants ?? []) {
+                const namedCharacters = [...new Set((variant.characterNames ?? []).map(name => normalizeCharacterName(name)).filter(Boolean))];
+                if (namedCharacters.length !== 1 || (variant.characterIds ?? []).length !== 1) {
+                    continue;
+                }
+
+                const matches = (characters ?? []).filter(character => normalizeCharacterName(character?.name) === namedCharacters[0]);
+                if (matches.length === 1 && matches[0]?.avatar) {
+                    variant.characterIds = [String(matches[0].avatar)];
+                }
+            }
+        }
+        settings.schemaVersion = 9;
+        saveSettingsDebounced();
+    }
+
     for (const store of Object.values(settings.personas)) {
         store.activeId ??= '';
         store.variants ??= [];
@@ -99,9 +117,42 @@ function getSettings() {
         }
     }
 
+    let repairedCharacterBindings = false;
+    for (const store of Object.values(settings.personas)) {
+        for (const variant of store.variants) {
+            const namedCharacters = [...new Set((variant.characterNames ?? []).map(name => normalizeCharacterName(name)).filter(Boolean))];
+            if (namedCharacters.length !== 1 || variant.characterIds.length !== 1) {
+                continue;
+            }
+
+            const matches = (characters ?? []).filter(character => normalizeCharacterName(character?.name) === namedCharacters[0]);
+            const resolvedId = matches.length === 1 ? String(matches[0]?.avatar || '') : '';
+            if (resolvedId && resolvedId !== variant.characterIds[0]) {
+                variant.characterIds = [resolvedId];
+                variant.characterNames = [String(matches[0].name || '')].filter(Boolean);
+                repairedCharacterBindings = true;
+            }
+        }
+    }
+    if (repairedCharacterBindings) {
+        saveSettingsDebounced();
+    }
+
     for (const [chatKey, binding] of Object.entries(settings.chatBindings)) {
         if (!binding?.avatarId || !binding?.variantId) {
             delete settings.chatBindings[chatKey];
+            continue;
+        }
+
+        const namedChatCharacter = normalizeCharacterName(binding.characterName);
+        if (!namedChatCharacter) {
+            continue;
+        }
+        const matches = (characters ?? []).filter(character => normalizeCharacterName(character?.name) === namedChatCharacter);
+        if (matches.length === 1 && matches[0]?.avatar && String(binding.characterId) !== String(matches[0].avatar)) {
+            binding.characterId = String(matches[0].avatar);
+            binding.characterName = String(matches[0].name || binding.characterName);
+            saveSettingsDebounced();
         }
     }
 
@@ -149,18 +200,12 @@ function getCurrentCharacterContext() {
 function normalizeCharacterName(name) {
     return String(name ?? '')
         .trim()
-        .replace(/[（(].*?[）)]/g, '')
         .replace(/\.(png|jpg|jpeg|webp)$/i, '')
         .toLocaleLowerCase();
 }
 
 function isCharacterIdForContext(characterId, context) {
-    if (!context || String(characterId) === String(context.id)) {
-        return Boolean(context);
-    }
-
-    const boundCharacter = characters?.find(character => String(character?.avatar) === String(characterId));
-    return Boolean(boundCharacter && normalizeCharacterName(boundCharacter.name) === normalizeCharacterName(context.name));
+    return Boolean(context && String(characterId) === String(context.id));
 }
 
 function isVariantForCharacter(variant, context) {
@@ -168,36 +213,34 @@ function isVariantForCharacter(variant, context) {
         return false;
     }
 
-    return (variant.characterIds ?? []).some(id => isCharacterIdForContext(id, context))
-        || (variant.characterNames ?? []).some(name => normalizeCharacterName(name) === normalizeCharacterName(context.name));
+    return (variant.characterIds ?? []).some(id => isCharacterIdForContext(id, context));
 }
 
 function getBoundCharacterOptions() {
     const store = getPersonaStore(user_avatar);
     const ids = new Set((store?.variants ?? []).flatMap(variant => variant.characterIds ?? []).map(String));
-    for (const variant of store?.variants ?? []) {
-        for (const name of variant.characterNames ?? []) {
-            const character = characters?.find(item => normalizeCharacterName(item?.name) === normalizeCharacterName(name));
-            if (character?.avatar) {
-                ids.add(String(character.avatar));
-            }
+    const options = [...ids].map(id => {
+        const character = characters?.find(item => String(item?.avatar) === String(id));
+        const name = String(character?.name || id);
+        return { id, name, label: name };
+    });
+    const nameCounts = options.reduce((counts, option) => counts.set(option.name, (counts.get(option.name) ?? 0) + 1), new Map());
+    for (const option of options) {
+        if (nameCounts.get(option.name) > 1) {
+            option.label = option.name;
+            option.name = `${option.name} · ${option.id.slice(-8)}`;
         }
     }
-    const options = [...ids].map(id => ({ id, name: String(characters?.find(character => String(character?.avatar) === String(id))?.name || id) }));
     const currentCharacter = getCurrentCharacterContext();
     if (currentCharacter && !options.some(option => isCharacterIdForContext(option.id, currentCharacter))) {
-        options.push({ id: currentCharacter.id, name: currentCharacter.name, transient: true });
+        options.push({ id: currentCharacter.id, name: currentCharacter.name, label: currentCharacter.name, transient: true });
     }
     return options.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getBoundVariantsForCharacter(characterId) {
-    const character = characters?.find(item => String(item?.avatar) === String(characterId));
-    const context = character
-        ? { id: String(character.avatar), name: String(character.name || character.avatar) }
-        : { id: String(characterId), name: String(characterId) };
     return (getPersonaStore(user_avatar)?.variants ?? []).filter(variant =>
-        isVariantForCharacter(variant, context),
+        (variant.characterIds ?? []).some(id => String(id) === String(characterId)),
     );
 }
 
@@ -207,11 +250,11 @@ function getSelectedLibraryCharacterContext() {
     }
 
     const option = getBoundCharacterOptions().find(item => item.id === selectedBindingCharacterId);
-    return option ? { id: option.id, name: option.name } : null;
+    return option ? { id: option.id, name: option.label || option.name } : null;
 }
 
 function hasCharacterBinding(variant) {
-    return Boolean((variant.characterIds ?? []).length || (variant.characterNames ?? []).length);
+    return Boolean((variant.characterIds ?? []).length);
 }
 
 function getVisibleVariantGroups(variants, currentCharacter = null) {
@@ -422,8 +465,6 @@ function render() {
     chatBindButton.disabled = !validPersona || !variant || !chatContext;
     const characterBindButton = panel.querySelector('#persona_variant_bind_character');
     characterBindButton.disabled = !validPersona || !variant || (!currentCharacter && !selectedBindingCharacterId);
-    const characterUnbindButton = panel.querySelector('#persona_variant_unbind_character');
-    characterUnbindButton.disabled = !getSelectedLibraryCharacterContext() || !getBoundVariantsForCharacter(selectedBindingCharacterId).length;
     chatUnbindButton.disabled = !chatBinding;
     chatBindButton.textContent = chatBinding ? '重新绑定' : '绑定聊天';
     chatStatus.textContent = !chatContext
@@ -536,7 +577,6 @@ function unbindSelectedCharacterLibrary() {
             continue;
         }
         variant.characterIds = (variant.characterIds ?? []).filter(id => !isCharacterIdForContext(id, character));
-        variant.characterNames = (variant.characterNames ?? []).filter(name => normalizeCharacterName(name) !== normalizeCharacterName(character.name));
         variant.updatedAt = new Date().toISOString();
         changed = true;
     }
@@ -785,9 +825,6 @@ function mount() {
         <div class="persona-variant-character-section persona-variant-character-section-top">
             <div class="persona-variant-character-heading">
                 <span><i class="fa-solid fa-user-group fa-fw"></i> 角色库</span>
-                <button id="persona_variant_unbind_character" class="menu_button red_button" type="button" title="解绑当前角色库">
-                    <i class="fa-solid fa-link-slash fa-fw"></i><span>解绑角色</span>
-                </button>
             </div>
             <div class="persona-variant-character-browser">
                 <div class="persona-variant-character-parent">
@@ -848,7 +885,6 @@ function mount() {
     panel.querySelector('#persona_variant_delete').addEventListener('click', deleteVariant);
     panel.querySelector('#persona_variant_auto_save').addEventListener('change', onAutoSaveChanged);
     panel.querySelector('#persona_variant_bind_character').addEventListener('click', bindSelectedVariantToCurrentCharacter);
-    panel.querySelector('#persona_variant_unbind_character').addEventListener('click', unbindSelectedCharacterLibrary);
     panel.querySelector('#persona_variant_bind_chat').addEventListener('click', bindCurrentChat);
     panel.querySelector('#persona_variant_unbind_chat').addEventListener('click', unbindCurrentChat);
     panel.querySelector('#persona_variant_character_versions_toggle').addEventListener('click', () => {
