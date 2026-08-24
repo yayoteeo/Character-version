@@ -1058,7 +1058,7 @@ function onPersonaDeleted({ avatarId } = {}) {
     render();
 }
 
-async function applyCurrentChatBinding() {
+async function applyCurrentChatBinding({ notify = false } = {}) {
     if (autoApplyInProgress) {
         return;
     }
@@ -1078,7 +1078,7 @@ async function applyCurrentChatBinding() {
         if (user_avatar !== binding.avatarId) {
             await setUserAvatar(binding.avatarId, { toastPersonaNameChange: false, navigateToCurrent: false });
         }
-        await applyVariantRecord(binding.avatarId, binding.variantId, { notify: true, automatic: true });
+        await applyVariantRecord(binding.avatarId, binding.variantId, { notify, automatic: notify });
     } catch (error) {
         console.error('[Persona Variants] Failed to apply current chat binding:', error);
     } finally {
@@ -1087,16 +1087,16 @@ async function applyCurrentChatBinding() {
     }
 }
 
-function scheduleContextChange() {
+function scheduleContextChange(notify = false) {
     clearTimeout(contextChangeTimer);
-    contextChangeTimer = setTimeout(applyCurrentChatBinding, AUTO_APPLY_DELAY);
+    contextChangeTimer = setTimeout(() => applyCurrentChatBinding({ notify }), AUTO_APPLY_DELAY);
 }
 
 function onChatChanged() {
     selectedBindingCharacterId = '';
     selectedBindingContextKey = '';
     characterLibraryExpanded = false;
-    scheduleContextChange();
+    scheduleContextChange(true);
 }
 
 jQuery(() => {
@@ -1107,12 +1107,12 @@ jQuery(() => {
     subscribeIfSupported(event_types.PERSONA_DELETED, onPersonaDeleted);
     subscribeIfSupported(event_types.SETTINGS_UPDATED, render);
     subscribeIfSupported(event_types.CHAT_CHANGED, onChatChanged);
-    subscribeIfSupported(event_types.APP_READY, scheduleContextChange);
+    subscribeIfSupported(event_types.APP_READY, () => scheduleContextChange(false));
     subscribeIfSupported(event_types.PERSONA_CHANGED, onPersonaChanged);
-    subscribeIfSupported(event_types.CHARACTER_PAGE_LOADED, scheduleContextChange);
-    subscribeIfSupported(event_types.CHARACTER_EDITED, scheduleContextChange);
-    subscribeIfSupported(event_types.CHARACTER_RENAMED, scheduleContextChange);
-    subscribeIfSupported(event_types.CHARACTER_DELETED, scheduleContextChange);
+    subscribeIfSupported(event_types.CHARACTER_PAGE_LOADED, () => scheduleContextChange(false));
+    subscribeIfSupported(event_types.CHARACTER_EDITED, () => scheduleContextChange(false));
+    subscribeIfSupported(event_types.CHARACTER_RENAMED, () => scheduleContextChange(false));
+    subscribeIfSupported(event_types.CHARACTER_DELETED, () => scheduleContextChange(false));
     $(document).on('click.personaVariants', '#user_avatar_block .avatar-container', () => setTimeout(render, 0));
     $(document).on(
         'input.personaVariants change.personaVariants',
