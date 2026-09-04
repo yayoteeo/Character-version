@@ -632,8 +632,10 @@ function render() {
     renderCharacterBindingBrowser(panel);
     const libraryCharacter = getSelectedLibraryCharacterContext();
     const visibleGroups = getVisibleVariantGroups(variants, libraryCharacter);
-    const visibleVariants = libraryCharacter?.isOriginalLibrary
-        ? visibleGroups.original
+    const originalLibrarySelected = libraryCharacter?.isOriginalLibrary || selectedBindingCharacterId === ORIGINAL_LIBRARY_ID;
+    const originalLibraryVariants = variants.filter(variant => !hasCharacterBinding(variant));
+    const visibleVariants = originalLibrarySelected
+        ? originalLibraryVariants
         : [...visibleGroups.generic, ...visibleGroups.bound];
     const select = panel.querySelector('#persona_variant_select');
     const emptyOption = document.createElement('option');
@@ -650,8 +652,15 @@ function render() {
             parent.append(option);
         }
     };
-    if (libraryCharacter) {
-        if (visibleGroups.original.length && !libraryCharacter.isOriginalLibrary) {
+    if (originalLibrarySelected) {
+        if (visibleVariants.length) {
+            const group = document.createElement('optgroup');
+            group.label = '原始库';
+            appendOptions(group, visibleVariants);
+            select.append(group);
+        }
+    } else if (libraryCharacter) {
+        if (visibleGroups.generic.length) {
             const group = document.createElement('optgroup');
             group.label = '原始库';
             appendOptions(group, visibleGroups.original);
@@ -688,7 +697,7 @@ function render() {
     chatBindButton.disabled = !validPersona || !variant || !chatContext;
     const characterBindButton = panel.querySelector('#persona_variant_bind_character');
     characterBindButton.disabled = !validPersona || !variant || (!currentCharacter && !selectedBindingCharacterId);
-    characterBindButton.disabled ||= Boolean(libraryCharacter?.isOriginalLibrary || lockedOriginal);
+    characterBindButton.disabled ||= Boolean(originalLibrarySelected || lockedOriginal);
     chatUnbindButton.disabled = !chatBinding;
     chatBindButton.textContent = chatBinding ? '重新绑定' : '绑定聊天';
     chatStatus.textContent = !chatContext
@@ -958,7 +967,7 @@ function unbindCurrentChat() {
 
 function saveCurrentToVariant(variant, notify = false) {
     const snapshot = captureCurrentPersona();
-    if (!variant || (variant.isOriginal && isVariantLocked(variant)) || !snapshot) {
+    if (!variant || isVariantLocked(variant) || !snapshot) {
         return false;
     }
 
