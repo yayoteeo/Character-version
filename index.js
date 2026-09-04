@@ -21,6 +21,7 @@ const DEFAULT_DEPTH = 2;
 const DEFAULT_ROLE = 0;
 const AUTO_APPLY_DELAY = 300;
 const AUTO_SAVE_DELAY = 350;
+const ORIGINAL_VARIANT_PREFIX = 'original-';
 
 let selectedBindingCharacterId = '';
 let selectedBindingContextKey = '';
@@ -31,14 +32,17 @@ const promptedDuplicateNameKeys = new Set();
 let contextChangeTimer = null;
 let autoSaveTimer = null;
 let autoApplyInProgress = false;
+let restoringLockedOriginal = false;
 
 function isNamedExistingPersona(avatarId = user_avatar) {
-    if (!avatarId || !Object.prototype.hasOwnProperty.call(power_user.personas ?? {}, avatarId)) {
-        return false;
-    }
+    return hasExistingPersona(avatarId) && (() => {
+        const name = String(power_user.personas[avatarId] ?? '').trim();
+        return Boolean(name && name !== '[Unnamed Persona]');
+    })();
+}
 
-    const name = String(power_user.personas[avatarId] ?? '').trim();
-    return Boolean(name && name !== '[Unnamed Persona]');
+function hasExistingPersona(avatarId = user_avatar) {
+    return Boolean(avatarId && Object.prototype.hasOwnProperty.call(power_user.personas ?? {}, avatarId));
 }
 
 function makeId() {
@@ -49,8 +53,58 @@ function makeId() {
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function getPersonaSnapshot(avatarId = user_avatar) {
+    const descriptor = power_user.persona_descriptions?.[avatarId] ?? {};
+    return {
+        title: String(descriptor.title ?? ''),
+        description: String(descriptor.description ?? (avatarId === user_avatar ? power_user.persona_description : '')),
+        position: Number(descriptor.position ?? (avatarId === user_avatar ? power_user.persona_description_position : persona_description_positions.IN_PROMPT)),
+        depth: Number(descriptor.depth ?? (avatarId === user_avatar ? power_user.persona_description_depth : DEFAULT_DEPTH)),
+        role: Number(descriptor.role ?? (avatarId === user_avatar ? power_user.persona_description_role : DEFAULT_ROLE)),
+        lorebook: String(descriptor.lorebook ?? (avatarId === user_avatar ? power_user.persona_description_lorebook : '')),
+    };
+}
+
+function getOriginalVariantId(avatarId) {
+    return `${ORIGINAL_VARIANT_PREFIX}${avatarId}`;
+}
+
+function ensureOriginalVariant(avatarId, store) {
+    if (!store || !avatarId) {
+        return false;
+    }
+
+    const existing = store.variants.find(variant => variant.isOriginal || variant.id === getOriginalVariantId(avatarId));
+    if (existing) {
+        existing.id = getOriginalVariantId(avatarId);
+        existing.name = '原始库';
+        existing.isOriginal = true;
+        existing.characterIds = [];
+        existing.characterNames = [];
+        existing.locked = Boolean(existing.locked);
+        return false;
+    }
+
+    const now = new Date().toISOString();
+    store.variants.unshift({
+        id: getOriginalVariantId(avatarId),
+        name: '原始库',
+        ...getPersonaSnapshot(avatarId),
+        characterIds: [],
+        characterNames: [],
+        isOriginal: true,
+        locked: false,
+        createdAt: now,
+        updatedAt: now,
+    });
+    if (!store.activeId) {
+        store.activeId = getOriginalVariantId(avatarId);
+    }
+    return true;
+}
+
 function getSettings() {
-    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 10, personas: {}, chatBindings: {}, characterAliases: {}, autoSaveEnabled: false };
+    const settings = extension_settings[MODULE_NAME] ??= { schemaVersion: 11, personas: {}, chatBindings: {}, characterAliases: {}, autoSaveEnabled: false };
     settings.schemaVersion ??= 1;
     settings.personas ??= {};
     settings.chatBindings ??= {};
@@ -117,6 +171,11 @@ function getSettings() {
         saveSettingsDebounced();
     }
 
+    if (settings.schemaVersion < 11) {
+        settings.schemaVersion = 11;
+        saveSettingsDebounced();
+    }
+
     for (const store of Object.values(settings.personas)) {
         store.activeId ??= '';
         store.variants ??= [];
@@ -124,6 +183,17 @@ function getSettings() {
             variant.characterIds = [...new Set((Array.isArray(variant.characterIds) ? variant.characterIds : []).map(String).filter(Boolean))];
             variant.characterNames = [...new Set((Array.isArray(variant.characterNames) ? variant.characterNames : []).map(String).filter(Boolean))];
         }
+    }
+
+    let addedOriginal = false;
+    for (const avatarId of Object.keys(power_user.personas ?? {})) {
+        const store = settings.personas[avatarId] ??= { activeId: '', variants: [] };
+        store.activeId ??= '';
+        store.variants ??= [];
+        addedOriginal = ensureOriginalVariant(avatarId, store) || addedOriginal;
+    }
+    if (addedOriginal) {
+        saveSettingsDebounced();
     }
 
     let repairedCharacterBindings = false;
@@ -182,6 +252,9 @@ function getPersonaStore(avatarId = user_avatar, create = false) {
     if (store) {
         store.activeId ??= '';
         store.variants ??= [];
+        if (ensureOriginalVariant(avatarId, store)) {
+            saveSettingsDebounced();
+        }
     }
     return store;
 }
@@ -403,23 +476,57 @@ function isBindingForCurrentCharacter(binding, context = getCurrentChatContext()
 }
 
 function captureCurrentPersona() {
-    if (!isNamedExistingPersona()) {
+    if (!hasExistingPersona()) {
         return null;
     }
 
-    const descriptor = power_user.persona_descriptions?.[user_avatar] ?? {};
-    return {
-        title: String(descriptor.title ?? ''),
-        description: String(descriptor.description ?? power_user.persona_description ?? ''),
-        position: Number(descriptor.position ?? power_user.persona_description_position ?? persona_description_positions.IN_PROMPT),
-        depth: Number(descriptor.depth ?? power_user.persona_description_depth ?? DEFAULT_DEPTH),
-        role: Number(descriptor.role ?? power_user.persona_description_role ?? DEFAULT_ROLE),
-        lorebook: String(descriptor.lorebook ?? power_user.persona_description_lorebook ?? ''),
-    };
+    return getPersonaSnapshot();
 }
 
 function getVariantLabel(variant) {
+    if (variant?.isOriginal) {
+        return variant.locked ? '原始库 [已锁定]' : '原始库';
+    }
     return variant?.name || '未命名版本';
+}
+
+function isVariantLocked(variant) {
+    return Boolean(variant?.isOriginal && variant.locked);
+}
+
+function restoreLockedOriginal() {
+    const variant = selectedVariant();
+    if (!isVariantLocked(variant) || restoringLockedOriginal || !hasExistingPersona()) {
+        return false;
+    }
+
+    const descriptor = power_user.persona_descriptions[user_avatar] ??= {};
+    const connections = descriptor.connections;
+    restoringLockedOriginal = true;
+    try {
+        Object.assign(descriptor, {
+            title: variant.title,
+            description: variant.description,
+            position: variant.position,
+            depth: variant.depth,
+            role: variant.role,
+            lorebook: variant.lorebook,
+        });
+        if (connections !== undefined) {
+            descriptor.connections = connections;
+        }
+        power_user.persona_description = variant.description;
+        power_user.persona_description_position = variant.position;
+        power_user.persona_description_depth = variant.depth;
+        power_user.persona_description_role = variant.role;
+        power_user.persona_description_lorebook = variant.lorebook;
+        setPersonaDescription();
+        refreshCurrentPersonaCard();
+        saveSettingsDebounced();
+    } finally {
+        restoringLockedOriginal = false;
+    }
+    return true;
 }
 
 function refreshCurrentPersonaCard() {
@@ -516,6 +623,7 @@ function render() {
     }
 
     const validPersona = isNamedExistingPersona();
+    const personaAvailable = hasExistingPersona();
     const store = getPersonaStore(user_avatar);
     const variants = store?.variants ?? [];
     const currentCharacter = getCurrentCharacterContext();
@@ -528,7 +636,7 @@ function render() {
     const select = panel.querySelector('#persona_variant_select');
     const emptyOption = document.createElement('option');
     emptyOption.value = '';
-    emptyOption.textContent = validPersona ? '选择已保存的人设版本…' : '请先选择一个已命名的人设';
+    emptyOption.textContent = personaAvailable ? '选择已保存的人设版本…' : '请先选择一个人设';
     select.replaceChildren(emptyOption);
 
     const appendOptions = (parent, source) => {
@@ -558,19 +666,27 @@ function render() {
     }
 
     select.value = visibleVariants.some(item => item.id === store?.activeId) ? store.activeId : '';
-    select.disabled = !validPersona || visibleVariants.length === 0;
+    select.disabled = !personaAvailable || visibleVariants.length === 0;
     const variant = visibleVariants.find(item => item.id === select.value) ?? null;
-    panel.querySelector('#persona_variant_save').disabled = !validPersona;
-    panel.querySelector('#persona_variant_overwrite').disabled = !validPersona || !variant || getSettings().autoSaveEnabled;
-    panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant;
-    panel.querySelector('#persona_variant_delete').disabled = !validPersona || !variant;
+    const lockedOriginal = isVariantLocked(variant);
+    panel.querySelector('#persona_variant_save').disabled = !personaAvailable;
+    panel.querySelector('#persona_variant_overwrite').disabled = !personaAvailable || !variant || lockedOriginal || getSettings().autoSaveEnabled;
+    panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant || variant.isOriginal;
+    panel.querySelector('#persona_variant_delete').disabled = !validPersona || !variant || variant.isOriginal;
+    const lockButton = panel.querySelector('#persona_variant_lock');
+    lockButton.disabled = !variant || !variant.isOriginal;
+    lockButton.title = variant?.locked ? '解锁原始库后才能编辑' : '锁定原始库，禁止编辑人设内容';
+    lockButton.setAttribute('aria-label', variant?.locked ? '解锁原始库' : '锁定原始库');
+    lockButton.innerHTML = `<i class="fa-solid fa-${variant?.locked ? 'lock' : 'unlock'} fa-fw"></i><span>${variant?.locked ? '解锁' : '锁定'}</span>`;
     panel.querySelector('#persona_variant_auto_save').checked = Boolean(getSettings().autoSaveEnabled);
+    panel.querySelector('#persona_variant_auto_save').disabled = lockedOriginal;
     const chatBindButton = panel.querySelector('#persona_variant_bind_chat');
     const chatUnbindButton = panel.querySelector('#persona_variant_unbind_chat');
     const chatStatus = panel.querySelector('.persona-variant-chat-status');
-    chatBindButton.disabled = !validPersona || !variant || !chatContext;
+    chatBindButton.disabled = !validPersona || !variant || !chatContext || Boolean(variant?.isOriginal);
     const characterBindButton = panel.querySelector('#persona_variant_bind_character');
     characterBindButton.disabled = !validPersona || !variant || (!currentCharacter && !selectedBindingCharacterId);
+    characterBindButton.disabled ||= Boolean(variant?.isOriginal || lockedOriginal);
     chatUnbindButton.disabled = !chatBinding;
     chatBindButton.textContent = chatBinding ? '重新绑定' : '绑定聊天';
     chatStatus.textContent = !chatContext
@@ -581,6 +697,34 @@ function render() {
     const currentCharacterStatus = panel.querySelector('#persona_variant_current_character');
     currentCharacterStatus.textContent = currentCharacter ? currentCharacter.name : '未识别角色';
     currentCharacterStatus.classList.toggle('is-active', Boolean(currentCharacter));
+    syncPersonaEditorLock(lockedOriginal);
+}
+
+function syncPersonaEditorLock(locked) {
+    const controls = [
+        document.querySelector('#persona_description'),
+        document.querySelector('#persona_description_position'),
+        document.querySelector('#persona_depth_value'),
+        document.querySelector('#persona_depth_role'),
+        document.querySelector('#persona_lore_button'),
+        document.querySelector('#persona_rename_button'),
+        document.querySelector('#persona-management-dropdown'),
+        document.querySelector('#persona_connections_buttons'),
+        document.querySelector('#persona_connections_list'),
+        document.querySelector('#persona_set_image_button'),
+        document.querySelector('#persona_duplicate_button'),
+        document.querySelector('#persona_delete_button'),
+        document.querySelector('#sync_name_button'),
+    ].filter(Boolean);
+    for (const control of controls) {
+        if ('readOnly' in control) {
+            control.readOnly = locked;
+        }
+        if ('disabled' in control) {
+            control.disabled = locked;
+        }
+        control.classList.toggle('persona-variant-locked-control', locked);
+    }
 }
 
 function togglePanel() {
@@ -625,9 +769,10 @@ async function saveVariant() {
                 ? currentCharacter.name
                 : getCharacterName(targetCharacterId)
         : chatContext?.characterName;
+    const savedVariantCount = store.variants.filter(item => !item.isOriginal).length;
     const suggestedName = targetCharacterName
         ? `${personaName} - ${targetCharacterName} -`
-        : `${personaName} - ${store.variants.length + 1}`.trim();
+        : `${personaName} - ${savedVariantCount + 1}`.trim();
     const name = await askForName('保存当前人设版本', suggestedName);
     if (!name) {
         return;
@@ -656,11 +801,27 @@ async function saveVariant() {
     toastr.success(`已保存“${name}”。`, '人设版本管理');
 }
 
+function toggleOriginalLock() {
+    const variant = selectedVariant();
+    if (!variant?.isOriginal) {
+        return;
+    }
+
+    variant.locked = !variant.locked;
+    variant.updatedAt = new Date().toISOString();
+    saveSettingsDebounced();
+    if (variant.locked) {
+        restoreLockedOriginal();
+    }
+    render();
+    toastr.info(variant.locked ? '原始库已锁定，当前人设内容不可编辑。' : '原始库已解锁，可以继续编辑。', '人设版本管理');
+}
+
 function bindSelectedVariantToCurrentCharacter() {
     const variant = selectedVariant();
     const currentCharacter = getCurrentCharacterContext();
     const characterId = selectedBindingCharacterId || currentCharacter?.id;
-    if (!variant || !characterId) {
+    if (!variant || variant.isOriginal || isVariantLocked(variant) || !characterId) {
         return;
     }
 
@@ -682,6 +843,9 @@ function unbindSelectedCharacterLibrary() {
     const store = getPersonaStore(user_avatar);
     let changed = false;
     for (const variant of store?.variants ?? []) {
+        if (variant.isOriginal || isVariantLocked(variant)) {
+            continue;
+        }
         if (!isVariantForCharacter(variant, character)) {
             continue;
         }
@@ -707,7 +871,7 @@ function selectedVariant() {
 
 async function applyVariantRecord(avatarId, variantId, { notify = true, automatic = false } = {}) {
     const variant = getVariant(avatarId, variantId);
-    if (!variant || !isNamedExistingPersona(avatarId)) {
+    if (!variant || !hasExistingPersona(avatarId)) {
         return false;
     }
 
@@ -756,7 +920,7 @@ async function applyVariantRecord(avatarId, variantId, { notify = true, automati
 async function bindCurrentChat() {
     const variant = selectedVariant();
     const chatContext = getCurrentChatContext();
-    if (!variant || !chatContext) {
+    if (!variant || variant.isOriginal || isVariantLocked(variant) || !chatContext) {
         return;
     }
 
@@ -789,7 +953,7 @@ function unbindCurrentChat() {
 
 function saveCurrentToVariant(variant, notify = false) {
     const snapshot = captureCurrentPersona();
-    if (!variant || !snapshot) {
+    if (!variant || (variant.isOriginal && isVariantLocked(variant)) || !snapshot) {
         return false;
     }
 
@@ -816,7 +980,7 @@ function scheduleAutoSave(immediate = false) {
     }
     autoSaveTimer = setTimeout(() => {
         const variant = selectedVariant();
-        if (saveCurrentToVariant(variant, false)) {
+        if (!isVariantLocked(variant) && saveCurrentToVariant(variant, false)) {
             const status = document.querySelector('.persona-variant-auto-save-status');
             if (status) {
                 status.textContent = `已自动保存 ${new Date().toLocaleTimeString()}`;
@@ -826,6 +990,10 @@ function scheduleAutoSave(immediate = false) {
 }
 
 function onAutoSaveChanged(event) {
+    if (isVariantLocked(selectedVariant())) {
+        event.currentTarget.checked = false;
+        return;
+    }
     getSettings().autoSaveEnabled = Boolean(event.currentTarget.checked);
     saveSettingsDebounced();
     render();
@@ -840,7 +1008,7 @@ function onAutoSaveChanged(event) {
 
 async function renameVariant() {
     const variant = selectedVariant();
-    if (!variant) {
+    if (!variant || variant.isOriginal || isVariantLocked(variant)) {
         return;
     }
 
@@ -857,7 +1025,7 @@ async function renameVariant() {
 
 async function deleteVariant() {
     const variant = selectedVariant();
-    if (!variant) {
+    if (!variant || variant.isOriginal || isVariantLocked(variant)) {
         return;
     }
 
@@ -961,6 +1129,9 @@ function mount() {
             <button id="persona_variant_rename" class="menu_button" type="button" title="重命名版本" aria-label="重命名版本">
                 <i class="fa-solid fa-pencil fa-fw"></i>
             </button>
+            <button id="persona_variant_lock" class="menu_button menu_button_icon" type="button" title="锁定原始库" aria-label="锁定原始库">
+                <i class="fa-solid fa-unlock fa-fw"></i><span>锁定</span>
+            </button>
             <button id="persona_variant_delete" class="menu_button red_button" type="button" title="删除版本" aria-label="删除版本">
                 <i class="fa-solid fa-trash fa-fw"></i>
             </button>
@@ -994,6 +1165,7 @@ function mount() {
     panel.querySelector('#persona_variant_save').addEventListener('click', saveVariant);
     panel.querySelector('#persona_variant_overwrite').addEventListener('click', overwriteVariant);
     panel.querySelector('#persona_variant_rename').addEventListener('click', renameVariant);
+    panel.querySelector('#persona_variant_lock').addEventListener('click', toggleOriginalLock);
     panel.querySelector('#persona_variant_delete').addEventListener('click', deleteVariant);
     panel.querySelector('#persona_variant_auto_save').addEventListener('change', onAutoSaveChanged);
     panel.querySelector('#persona_variant_bind_character').addEventListener('click', bindSelectedVariantToCurrentCharacter);
@@ -1037,6 +1209,9 @@ function onPersonaRenamed() {
 }
 
 function onPersonaUpdated() {
+    if (restoreLockedOriginal()) {
+        return;
+    }
     render();
     scheduleAutoSave(false);
 }
@@ -1044,6 +1219,7 @@ function onPersonaUpdated() {
 function onPersonaChanged() {
     selectedBindingCharacterId = '';
     selectedBindingContextKey = '';
+    render();
     scheduleContextChange();
 }
 
@@ -1103,6 +1279,7 @@ jQuery(() => {
     getSettings();
     mountWhenAvailable();
     subscribeIfSupported(event_types.PERSONA_UPDATED, onPersonaUpdated);
+    subscribeIfSupported(event_types.PERSONA_CREATED, render);
     subscribeIfSupported(event_types.PERSONA_RENAMED, onPersonaRenamed);
     subscribeIfSupported(event_types.PERSONA_DELETED, onPersonaDeleted);
     subscribeIfSupported(event_types.SETTINGS_UPDATED, render);
@@ -1117,7 +1294,11 @@ jQuery(() => {
     $(document).on(
         'input.personaVariants change.personaVariants',
         '#persona_description, #persona_description_position, #persona_depth_value, #persona_depth_role',
-        () => scheduleAutoSave(false),
+        () => {
+            if (!restoreLockedOriginal()) {
+                scheduleAutoSave(false);
+            }
+        },
     );
     scheduleContextChange();
 });

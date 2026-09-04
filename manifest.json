@@ -6,6 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Codex",
-    "version": "2.0",
-    "description": "为单个用户人设保存多个版本，并按聊天绑定自动应用。"
+    "version": "2.0.0",
+    "description": "为单个用户人设保存多个版本，提供固定原始库、人设锁定和服务端跨设备同步，并按聊天绑定自动应用。"
 }
