@@ -22,6 +22,7 @@ const DEFAULT_ROLE = 0;
 const AUTO_APPLY_DELAY = 300;
 const AUTO_SAVE_DELAY = 350;
 const ORIGINAL_VARIANT_PREFIX = 'original-';
+const ORIGINAL_LIBRARY_ID = '__persona_original_library__';
 
 let selectedBindingCharacterId = '';
 let selectedBindingContextKey = '';
@@ -76,31 +77,21 @@ function ensureOriginalVariant(avatarId, store) {
 
     const existing = store.variants.find(variant => variant.isOriginal || variant.id === getOriginalVariantId(avatarId));
     if (existing) {
+        const changed = existing.id !== getOriginalVariantId(avatarId)
+            || existing.name !== '原始库'
+            || existing.isOriginal !== true
+            || (existing.characterIds ?? []).length > 0
+            || (existing.characterNames ?? []).length > 0
+            || typeof existing.locked !== 'boolean';
         existing.id = getOriginalVariantId(avatarId);
         existing.name = '原始库';
         existing.isOriginal = true;
         existing.characterIds = [];
         existing.characterNames = [];
         existing.locked = Boolean(existing.locked);
-        return false;
+        return changed;
     }
-
-    const now = new Date().toISOString();
-    store.variants.unshift({
-        id: getOriginalVariantId(avatarId),
-        name: '原始库',
-        ...getPersonaSnapshot(avatarId),
-        characterIds: [],
-        characterNames: [],
-        isOriginal: true,
-        locked: false,
-        createdAt: now,
-        updatedAt: now,
-    });
-    if (!store.activeId) {
-        store.activeId = getOriginalVariantId(avatarId);
-    }
-    return true;
+    return false;
 }
 
 function getSettings() {
@@ -176,23 +167,17 @@ function getSettings() {
         saveSettingsDebounced();
     }
 
-    for (const store of Object.values(settings.personas)) {
+    let migratedOriginal = false;
+    for (const [avatarId, store] of Object.entries(settings.personas)) {
         store.activeId ??= '';
         store.variants ??= [];
+        migratedOriginal = ensureOriginalVariant(avatarId, store) || migratedOriginal;
         for (const variant of store.variants) {
             variant.characterIds = [...new Set((Array.isArray(variant.characterIds) ? variant.characterIds : []).map(String).filter(Boolean))];
             variant.characterNames = [...new Set((Array.isArray(variant.characterNames) ? variant.characterNames : []).map(String).filter(Boolean))];
         }
     }
-
-    let addedOriginal = false;
-    for (const avatarId of Object.keys(power_user.personas ?? {})) {
-        const store = settings.personas[avatarId] ??= { activeId: '', variants: [] };
-        store.activeId ??= '';
-        store.variants ??= [];
-        addedOriginal = ensureOriginalVariant(avatarId, store) || addedOriginal;
-    }
-    if (addedOriginal) {
+    if (migratedOriginal) {
         saveSettingsDebounced();
     }
 
@@ -252,9 +237,6 @@ function getPersonaStore(avatarId = user_avatar, create = false) {
     if (store) {
         store.activeId ??= '';
         store.variants ??= [];
-        if (ensureOriginalVariant(avatarId, store)) {
-            saveSettingsDebounced();
-        }
     }
     return store;
 }
@@ -321,12 +303,12 @@ function isVariantForCharacter(variant, context) {
 function getBoundCharacterOptions() {
     const store = getPersonaStore(user_avatar);
     const ids = new Set((store?.variants ?? []).flatMap(variant => variant.characterIds ?? []).map(String));
-    const options = [...ids].map(id => {
+    const options = [{ id: ORIGINAL_LIBRARY_ID, name: '原始库', label: '原始库', baseName: '原始库', isOriginalLibrary: true }, ...[...ids].map(id => {
         const character = characters?.find(item => String(item?.avatar) === String(id));
         const baseName = cleanCharacterName(character?.name, id);
         const name = getCharacterDisplayName(id, baseName);
         return { id, name, label: name, baseName };
-    });
+    })];
     const nameCounts = options.reduce((counts, option) => counts.set(option.baseName, (counts.get(option.baseName) ?? 0) + 1), new Map());
     const nameIndexes = new Map();
     for (const option of options) {
@@ -340,7 +322,11 @@ function getBoundCharacterOptions() {
     if (currentCharacter && !options.some(option => isCharacterIdForContext(option.id, currentCharacter))) {
         options.push({ id: currentCharacter.id, name: currentCharacter.name, label: currentCharacter.name, baseName: currentCharacter.name, transient: true });
     }
-    return options.sort((a, b) => a.name.localeCompare(b.name));
+    return options.sort((a, b) => {
+        if (a.isOriginalLibrary) return -1;
+        if (b.isOriginalLibrary) return 1;
+        return a.name.localeCompare(b.name);
+    });
 }
 
 async function promptDuplicateCharacterNames(options) {
@@ -362,7 +348,7 @@ async function promptDuplicateCharacterNames(options) {
             group,
             key: `${user_avatar}:${baseName}:${group.map(option => option.id).sort().join('|')}`,
         }))
-        .filter(item => !promptedDuplicateNameKeys.has(item.key) && item.group.some(option => !getCharacterAlias(option.id)));
+        .filter(item => !promptedDuplicateNameKeys.has(item.key) && item.group.some(option => !option.isOriginalLibrary && !getCharacterAlias(option.id)));
 
     if (!pendingGroups.length) {
         return;
@@ -426,7 +412,11 @@ function getSelectedLibraryCharacterContext() {
     }
 
     const option = getBoundCharacterOptions().find(item => item.id === selectedBindingCharacterId);
-    return option ? { id: option.id, name: option.name } : null;
+    return option ? { id: option.id, name: option.name, isOriginalLibrary: Boolean(option.isOriginalLibrary) } : null;
+}
+
+function isOriginalLibraryVariant(variant) {
+    return Boolean(variant && !hasCharacterBinding(variant));
 }
 
 function hasCharacterBinding(variant) {
@@ -435,12 +425,16 @@ function hasCharacterBinding(variant) {
 
 function getVisibleVariantGroups(variants, currentCharacter = null) {
     const generic = variants.filter(variant => !hasCharacterBinding(variant));
+    if (currentCharacter?.isOriginalLibrary) {
+        return { bound: [], generic: [], original: generic };
+    }
     const bound = currentCharacter
         ? variants.filter(variant => isVariantForCharacter(variant, currentCharacter))
         : [];
     return {
         bound,
         generic,
+        original: generic,
     };
 }
 
@@ -487,11 +481,12 @@ function getVariantLabel(variant) {
     if (variant?.isOriginal) {
         return variant.locked ? '原始库 [已锁定]' : '原始库';
     }
-    return variant?.name || '未命名版本';
+    const label = variant?.name || '未命名版本';
+    return isVariantLocked(variant) ? `${label} [已锁定]` : label;
 }
 
 function isVariantLocked(variant) {
-    return Boolean(variant?.isOriginal && variant.locked);
+    return Boolean(isOriginalLibraryVariant(variant) && variant.locked);
 }
 
 function restoreLockedOriginal() {
@@ -549,7 +544,8 @@ function getCharacterName(characterId) {
 }
 
 function getSelectedBindingCharacterId() {
-    return document.querySelector('#persona_variant_character_select')?.value || selectedBindingCharacterId;
+    const selectedId = document.querySelector('#persona_variant_character_select')?.value || selectedBindingCharacterId;
+    return selectedId === ORIGINAL_LIBRARY_ID ? '' : selectedId;
 }
 
 function renderCharacterBindingBrowser(panel) {
@@ -561,7 +557,7 @@ function renderCharacterBindingBrowser(panel) {
     characterSelect.replaceChildren();
     const empty = document.createElement('option');
     empty.value = '';
-    empty.textContent = characterOptions.length ? '选择已绑定角色…' : '当前 user 尚未绑定角色';
+    empty.textContent = '选择角色库…';
     characterSelect.append(empty);
     for (const optionData of characterOptions) {
         const option = document.createElement('option');
@@ -592,7 +588,9 @@ function renderCharacterBindingBrowser(panel) {
     boundVersions.replaceChildren();
     const versionsToggle = panel.querySelector('#persona_variant_character_versions_toggle');
     const editCharacterButton = panel.querySelector('#persona_variant_character_edit');
-    editCharacterButton.disabled = !selectedBindingCharacterId;
+    const selectedOption = characterOptions.find(option => option.id === selectedBindingCharacterId);
+    const isOriginalLibrary = Boolean(selectedOption?.isOriginalLibrary);
+    editCharacterButton.disabled = !selectedBindingCharacterId || isOriginalLibrary;
     if (!selectedBindingCharacterId) {
         versionsToggle.disabled = true;
         versionsToggle.textContent = '已绑定版本';
@@ -601,9 +599,11 @@ function renderCharacterBindingBrowser(panel) {
         return;
     }
 
-    const versions = getBoundVariantsForCharacter(selectedBindingCharacterId);
+    const versions = isOriginalLibrary
+        ? (getPersonaStore(user_avatar)?.variants ?? []).filter(variant => !hasCharacterBinding(variant))
+        : getBoundVariantsForCharacter(selectedBindingCharacterId);
     versionsToggle.disabled = !versions.length;
-    versionsToggle.textContent = `已绑定版本${versions.length ? ` (${versions.length})` : ''}`;
+    versionsToggle.textContent = `${isOriginalLibrary ? '原始库版本' : '已绑定版本'}${versions.length ? ` (${versions.length})` : ''}`;
     versionsToggle.setAttribute('aria-expanded', String(characterLibraryExpanded && Boolean(versions.length)));
     boundVersions.hidden = !characterLibraryExpanded || !versions.length;
     for (const boundVariant of versions) {
@@ -632,7 +632,9 @@ function render() {
     renderCharacterBindingBrowser(panel);
     const libraryCharacter = getSelectedLibraryCharacterContext();
     const visibleGroups = getVisibleVariantGroups(variants, libraryCharacter);
-    const visibleVariants = [...visibleGroups.bound, ...visibleGroups.generic];
+    const visibleVariants = libraryCharacter?.isOriginalLibrary
+        ? visibleGroups.original
+        : [...visibleGroups.generic, ...visibleGroups.bound];
     const select = panel.querySelector('#persona_variant_select');
     const emptyOption = document.createElement('option');
     emptyOption.value = '';
@@ -649,16 +651,16 @@ function render() {
         }
     };
     if (libraryCharacter) {
+        if (visibleGroups.original.length && !libraryCharacter.isOriginalLibrary) {
+            const group = document.createElement('optgroup');
+            group.label = '原始库';
+            appendOptions(group, visibleGroups.original);
+            select.append(group);
+        }
         if (visibleGroups.bound.length) {
             const group = document.createElement('optgroup');
             group.label = `角色库：${libraryCharacter.name}`;
             appendOptions(group, visibleGroups.bound);
-            select.append(group);
-        }
-        if (visibleGroups.generic.length) {
-            const group = document.createElement('optgroup');
-            group.label = '通用版本';
-            appendOptions(group, visibleGroups.generic);
             select.append(group);
         }
     } else {
@@ -671,10 +673,10 @@ function render() {
     const lockedOriginal = isVariantLocked(variant);
     panel.querySelector('#persona_variant_save').disabled = !personaAvailable;
     panel.querySelector('#persona_variant_overwrite').disabled = !personaAvailable || !variant || lockedOriginal || getSettings().autoSaveEnabled;
-    panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant || variant.isOriginal;
-    panel.querySelector('#persona_variant_delete').disabled = !validPersona || !variant || variant.isOriginal;
+    panel.querySelector('#persona_variant_rename').disabled = !validPersona || !variant || lockedOriginal;
+    panel.querySelector('#persona_variant_delete').disabled = !validPersona || !variant || lockedOriginal;
     const lockButton = panel.querySelector('#persona_variant_lock');
-    lockButton.disabled = !variant || !variant.isOriginal;
+    lockButton.disabled = !variant || !isOriginalLibraryVariant(variant);
     lockButton.title = variant?.locked ? '解锁原始库后才能编辑' : '锁定原始库，禁止编辑人设内容';
     lockButton.setAttribute('aria-label', variant?.locked ? '解锁原始库' : '锁定原始库');
     lockButton.innerHTML = `<i class="fa-solid fa-${variant?.locked ? 'lock' : 'unlock'} fa-fw"></i><span>${variant?.locked ? '解锁' : '锁定'}</span>`;
@@ -683,10 +685,10 @@ function render() {
     const chatBindButton = panel.querySelector('#persona_variant_bind_chat');
     const chatUnbindButton = panel.querySelector('#persona_variant_unbind_chat');
     const chatStatus = panel.querySelector('.persona-variant-chat-status');
-    chatBindButton.disabled = !validPersona || !variant || !chatContext || Boolean(variant?.isOriginal);
+    chatBindButton.disabled = !validPersona || !variant || !chatContext;
     const characterBindButton = panel.querySelector('#persona_variant_bind_character');
     characterBindButton.disabled = !validPersona || !variant || (!currentCharacter && !selectedBindingCharacterId);
-    characterBindButton.disabled ||= Boolean(variant?.isOriginal || lockedOriginal);
+    characterBindButton.disabled ||= Boolean(libraryCharacter?.isOriginalLibrary || lockedOriginal);
     chatUnbindButton.disabled = !chatBinding;
     chatBindButton.textContent = chatBinding ? '重新绑定' : '绑定聊天';
     chatStatus.textContent = !chatContext
@@ -758,8 +760,10 @@ async function saveVariant() {
     const store = getPersonaStore(user_avatar, true);
     const personaName = String(power_user.personas[user_avatar] ?? 'Persona').trim();
     const chatContext = getCurrentChatContext();
+    const libraryCharacter = getSelectedLibraryCharacterContext();
+    const originalLibrarySelected = Boolean(libraryCharacter?.isOriginalLibrary);
     const selectedCharacterId = getSelectedBindingCharacterId();
-    const targetCharacterId = selectedCharacterId || chatContext?.characterId || '';
+    const targetCharacterId = originalLibrarySelected ? '' : selectedCharacterId || chatContext?.characterId || '';
     const currentCharacter = getCurrentCharacterContext();
     const selectedCharacter = getSelectedLibraryCharacterContext();
     const targetCharacterName = targetCharacterId
@@ -768,7 +772,7 @@ async function saveVariant() {
             : currentCharacter && isCharacterIdForContext(targetCharacterId, currentCharacter)
                 ? currentCharacter.name
                 : getCharacterName(targetCharacterId)
-        : chatContext?.characterName;
+        : originalLibrarySelected ? '' : chatContext?.characterName;
     const savedVariantCount = store.variants.filter(item => !item.isOriginal).length;
     const suggestedName = targetCharacterName
         ? `${personaName} - ${targetCharacterName} -`
@@ -803,7 +807,7 @@ async function saveVariant() {
 
 function toggleOriginalLock() {
     const variant = selectedVariant();
-    if (!variant?.isOriginal) {
+    if (!isOriginalLibraryVariant(variant)) {
         return;
     }
 
@@ -821,7 +825,8 @@ function bindSelectedVariantToCurrentCharacter() {
     const variant = selectedVariant();
     const currentCharacter = getCurrentCharacterContext();
     const characterId = selectedBindingCharacterId || currentCharacter?.id;
-    if (!variant || variant.isOriginal || isVariantLocked(variant) || !characterId) {
+    const libraryCharacter = getSelectedLibraryCharacterContext();
+    if (!variant || libraryCharacter?.isOriginalLibrary || isVariantLocked(variant) || !characterId) {
         return;
     }
 
@@ -843,7 +848,7 @@ function unbindSelectedCharacterLibrary() {
     const store = getPersonaStore(user_avatar);
     let changed = false;
     for (const variant of store?.variants ?? []) {
-        if (variant.isOriginal || isVariantLocked(variant)) {
+        if (isVariantLocked(variant)) {
             continue;
         }
         if (!isVariantForCharacter(variant, character)) {
@@ -920,7 +925,7 @@ async function applyVariantRecord(avatarId, variantId, { notify = true, automati
 async function bindCurrentChat() {
     const variant = selectedVariant();
     const chatContext = getCurrentChatContext();
-    if (!variant || variant.isOriginal || isVariantLocked(variant) || !chatContext) {
+    if (!variant || isVariantLocked(variant) || !chatContext) {
         return;
     }
 
@@ -1008,7 +1013,7 @@ function onAutoSaveChanged(event) {
 
 async function renameVariant() {
     const variant = selectedVariant();
-    if (!variant || variant.isOriginal || isVariantLocked(variant)) {
+    if (!variant || isVariantLocked(variant)) {
         return;
     }
 
@@ -1025,7 +1030,7 @@ async function renameVariant() {
 
 async function deleteVariant() {
     const variant = selectedVariant();
-    if (!variant || variant.isOriginal || isVariantLocked(variant)) {
+    if (!variant || isVariantLocked(variant)) {
         return;
     }
 
@@ -1108,7 +1113,7 @@ function mount() {
             </div>
             <div class="persona-variant-character-browser">
                 <div class="persona-variant-character-parent">
-                    <select id="persona_variant_character_select" class="text_pole" aria-label="选择绑定角色"></select>
+                <select id="persona_variant_character_select" class="text_pole" aria-label="选择角色库"></select>
                 </div>
                 <div class="persona-variant-character-child">
                     <button id="persona_variant_character_versions_toggle" class="persona-variant-character-child-heading menu_button" type="button" aria-expanded="false">已绑定版本</button>
